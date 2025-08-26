@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Server Penetration Simulation</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    #controls { margin-bottom: 15px; }
+    label { margin-right: 10px; }
+    canvas { margin: 10px 0; border: 1px solid #ccc; }
+  </style>
+</head>
+<body>
+  <h2>Server Penetration Simulation</h2>
+  <div id="controls">
+    <label>Servers: <input id="servers" type="number" value="50" min="1"></label>
+    <label>Attackers: <input id="attackers" type="number" value="10" min="1"></label>
+    <label>Probability: <input id="probability" type="number" step="0.1" value="0.5" min="0" max="1"></label>
+    <button id="startButton">Start Simulation</button>
+  </div>
+  <div id="checkboxContainer"></div>
+  <canvas id="simulationCanvas"></canvas>
+  <div id="histogramContainer"></div>
+
+<script>
+"use strict";
+
+class ServerPenetrationSimulation {
+  constructor() {
+    this.simWidth = 600;
+    this.simHeight = 400;
+    this.histWidth = 600;
+    this.histHeight = 300;
+    this.padding = 50;
+
+    this.n = 50; 
+    this.m = 10; 
+    this.p = 0.5; 
+
+    this.colors = [];
+    this.checkboxes = [];
+    this.penetrationResults = [];
+
+    this.serversInput = document.getElementById("servers");
+    this.attackersInput = document.getElementById("attackers");
+    this.probabilityInput = document.getElementById("probability");
+    this.startButton = document.getElementById("startButton");
+    this.checkboxContainer = document.getElementById("checkboxContainer");
+    this.simCanvas = document.getElementById("simulationCanvas");
+    this.histContainer = document.getElementById("histogramContainer");
+
+    this.simCtx = this.setupCanvas(this.simCanvas, this.simWidth, this.simHeight);
+  }
+
+  init() {
+    this.startButton.addEventListener("click", () => this.startSimulation());
+    this.startSimulation();
+  }
+
+  setupCanvas(canvas, width, height) {
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = width * dpr;
+    canvas.height = height * dpr;
+    canvas.style.width = width + "px";
+    canvas.style.height = height + "px";
+    const ctx = canvas.getContext("2d");
+    ctx.scale(dpr, dpr);
+    return ctx;
+  }
+
+  startSimulation() {
+    this.n = parseInt(this.serversInput.value, 10);
+    this.m = parseInt(this.attackersInput.value, 10);
+    this.p = parseFloat(this.probabilityInput.value);
+
+    this.colors = this.generateUniqueColors(this.m);
+    this.penetrationResults = Array.from({ length: this.m }, () => Array(this.n).fill(0));
+
+    this.checkboxContainer.innerHTML = "";
+    this.checkboxes = [];
+    for (let i = 0; i < this.m; i++) {
+      const label = document.createElement("label");
+      label.textContent = " Hacker " + (i + 1);
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = true;
+      checkbox.addEventListener("change", () => {
+        this.clearSimArea();
+        this.drawSimAxes();
+        this.drawSimulation();
+      });
+      this.checkboxes.push(checkbox);
+      label.prepend(checkbox);
+      this.checkboxContainer.appendChild(label);
+    }
+
+    for (let attacker = 0; attacker < this.m; attacker++) {
+      for (let server = 0; server < this.n; server++) {
+        if (Math.random() < this.p) {
+          this.penetrationResults[attacker][server] = 1;
+        }
+      }
+    }
+
+    this.clearSimArea();
+    this.drawSimAxes();
+    this.drawSimulation();
+    this.drawHistogram();
+  }
+
+  clearSimArea() {
+    this.simCtx.clearRect(0, 0, this.simWidth, this.simHeight);
+  }
+
+  drawSimAxes() {
+    this.simCtx.beginPath();
+    this.simCtx.moveTo(this.padding, this.simHeight - this.padding);
+    this.simCtx.lineTo(this.simWidth - this.padding, this.simHeight - this.padding);
+    this.simCtx.stroke();
+    this.simCtx.beginPath();
+    this.simCtx.moveTo(this.padding, this.simHeight - this.padding);
+    this.simCtx.lineTo(this.padding, this.padding);
+    this.simCtx.stroke();
+
+    this.simCtx.font = "14px Arial";
+    this.simCtx.textAlign = "center";
+    this.simCtx.fillText("Server", this.simWidth / 2, this.simHeight - 10);
+    this.simCtx.save();
+    this.simCtx.translate(15, this.simHeight / 2);
+    this.simCtx.rotate(-Math.PI / 2);
+    this.simCtx.fillText("Penetration Count", 0, 0);
+    this.simCtx.restore();
+  }
+
+  drawSimulation() {
+    this.simCtx.clearRect(this.padding, this.padding, this.simWidth - 2 * this.padding, this.simHeight - 2 * this.padding);
+    this.drawSimAxes();
+
+    const lineWidth = (this.simWidth - 2 * this.padding) / this.n;
+    const maxPenetrations = this.n;
+    const lineHeight = (this.simHeight - 2 * this.padding) / maxPenetrations;
+
+    for (let attacker = 0; attacker < this.m; attacker++) {
+      if (!this.checkboxes[attacker].checked) continue;
+      let x = this.padding;
+      let y = this.simHeight - this.padding;
+      let count = 0;
+      for (let server = 0; server < this.n; server++) {
+        if (this.penetrationResults[attacker][server] === 1) {
+          count++;
+        }
+        const newY = this.simHeight - this.padding - count * lineHeight;
+        this.drawLine(x, y, x + lineWidth, newY, this.colors[attacker]);
+        x += lineWidth;
+        y = newY;
+      }
+    }
+  }
+
+  drawLine(startX, startY, endX, endY, color) {
+    this.simCtx.beginPath();
+    this.simCtx.moveTo(startX, startY);
+    this.simCtx.lineTo(endX, endY);
+    this.simCtx.strokeStyle = color;
+    this.simCtx.lineWidth = 2;
+    this.simCtx.stroke();
+  }
+
+  // Histogram: attackers vs number of penetrations
+  drawHistogram() {
+    this.histContainer.innerHTML = "";
+    const histCanvas = document.createElement("canvas");
+    histCanvas.style.border = "1px solid #000";
+    this.histContainer.appendChild(histCanvas);
+    const histCtx = this.setupCanvas(histCanvas, this.histWidth, this.histHeight);
+
+    // Axes
+    histCtx.beginPath();
+    histCtx.moveTo(50, this.histHeight - 40);
+    histCtx.lineTo(this.histWidth - 20, this.histHeight - 40);
+    histCtx.stroke();
+    histCtx.beginPath();
+    histCtx.moveTo(50, this.histHeight - 40);
+    histCtx.lineTo(50, 20);
+    histCtx.stroke();
+
+    histCtx.font = "14px Arial";
+    histCtx.textAlign = "center";
+    histCtx.fillText("Number of Penetrations", this.histWidth / 2, this.histHeight - 10);
+    histCtx.save();
+    histCtx.translate(15, this.histHeight / 2);
+    histCtx.rotate(-Math.PI / 2);
+    histCtx.fillText("Number of Attackers", 0, 0);
+    histCtx.restore();
+
+    // Count penetrations per attacker
+    const attackerCounts = this.penetrationResults.map(row => row.reduce((a,b) => a+b, 0));
+
+    // Build frequency distribution: how many attackers got 0,1,2,...,n penetrations
+    const histData = Array.from({ length: this.n+1 }, () => 0);
+    for (let c of attackerCounts) histData[c]++;
+
+    // Draw bars
+    const stepX = (this.histWidth - 70) / (this.n+1);
+    const maxFreq = Math.max(...histData);
+    const stepY = (this.histHeight - 60) / (maxFreq || 1);
+
+    for (let i = 0; i <= this.n; i++) {
+      const x = 50 + i * stepX;
+      const barHeight = histData[i] * stepY;
+      histCtx.fillStyle = "#4285F4";
+      histCtx.fillRect(x, this.histHeight - barHeight - 40, stepX - 2, barHeight);
+
+      // label
+      if (i % Math.ceil(this.n / 10) === 0) {
+        histCtx.fillStyle = "#000";
+        histCtx.textAlign = "center";
+        histCtx.font = "10px Arial";
+        histCtx.fillText(i, x + stepX / 2 - 1, this.histHeight - 25);
+      }
+    }
+  }
+
+  generateUniqueColors(num) {
+    const colors = [];
+    for (let i = 0; i < num; i++) {
+      const hue = (i * 360) / num;
+      colors.push(`hsl(${hue}, 100%, 50%)`);
+    }
+    return colors;
+  }
+}
+
+const simulation = new ServerPenetrationSimulation();
+simulation.init();
+</script>
+</body>
+</html>

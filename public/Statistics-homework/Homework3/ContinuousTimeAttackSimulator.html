@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Continuous Time Attack Simulator</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; }
+    input, label, button { margin: 5px; }
+    canvas { border: 1px solid #ccc; margin-top: 20px; }
+    h2 { margin-top: 40px; }
+  </style>
+</head>
+<body>
+  <h1>Continuous Time Attack Simulator</h1>
+  <p>
+    This simulation approximates a continuous-time attack process. The total time <b>T</b> 
+    is divided into <b>n</b> intervals of length <b>dt = T/n</b>. Each attacker has a 
+    probability <b>λ·dt</b> of launching an attack in each interval.
+  </p>
+
+  <!-- Input form -->
+  <form id="simForm">
+    <label>Total Simulation Time (T):</label>
+    <input type="number" id="totalTime" value="25" step="0.1" min="0.1" required><br>
+    
+    <label>Number of Intervals (n):</label>
+    <input type="number" id="intervals" value="100" min="1" required><br>
+    
+    <label>Number of Attackers:</label>
+    <input type="number" id="attackers" value="50" min="1" required><br>
+    
+    <label>Lambda (Rate of Attack):</label>
+    <input type="number" id="lambda" value="2" step="0.1" min="0" required><br>
+    
+    <button type="submit">Simulate</button>
+  </form>
+
+  <canvas id="trajectoryCanvas" width="800" height="400"></canvas>
+  <canvas id="histogramCanvas" width="400" height="400"></canvas>
+  <div id="stats"></div>
+
+  <script>
+    "use strict";
+
+    class AttackSimulator {
+      constructor(T, n, numAttackers, lambda) {
+        this.T = T;
+        this.n = n;
+        this.numAttackers = numAttackers;
+        this.lambda = lambda;
+        this.dt = this.T / this.n;
+        this.trajectories = [];
+      }
+
+      simulate() {
+        this.trajectories = [];
+        for (let a = 0; a < this.numAttackers; a++) {
+          let count = 0;
+          const trajectory = [0];
+          for (let i = 1; i <= this.n; i++) {
+            if (Math.random() < this.lambda * this.dt) count++;
+            trajectory.push(count);
+          }
+          this.trajectories.push(trajectory);
+        }
+      }
+
+      computeDistribution() {
+        const finalCounts = this.trajectories.map(traj => traj.at(-1));
+        const maxCount = Math.max(...finalCounts, 0);
+        const distribution = Array(maxCount + 1).fill(0);
+        for (const c of finalCounts) distribution[c]++;
+        return { distribution, finalCounts };
+      }
+
+      drawAxes(ctx, width, height, xLabel, yLabel) {
+        ctx.strokeStyle = "#000";
+        ctx.beginPath();
+        ctx.moveTo(40, height - 30);
+        ctx.lineTo(width - 20, height - 30);
+        ctx.moveTo(40, height - 30);
+        ctx.lineTo(40, 20);
+        ctx.stroke();
+
+        ctx.font = "12px sans-serif";
+        ctx.fillText(xLabel, width / 2, height - 5);
+        ctx.save();
+        ctx.translate(15, height / 2);
+        ctx.rotate(-Math.PI / 2);
+        ctx.fillText(yLabel, 0, 0);
+        ctx.restore();
+      }
+
+      drawTrajectories(ctx, width, height) {
+        ctx.clearRect(0, 0, width, height);
+        this.drawAxes(ctx, width, height, "Time (intervals)", "Cumulative Attacks");
+
+        const xScale = (width - 60) / this.n;
+        const maxCount = Math.max(...this.trajectories.flat(), 1);
+        const yScale = (height - 50) / maxCount;
+
+        const colors = ["#e41a1c","#377eb8","#4daf4a","#984ea3","#ff7f00"];
+        
+        for (let idx = 0; idx < this.trajectories.length; idx++) {
+          const traj = this.trajectories[idx];
+          ctx.strokeStyle = colors[idx % colors.length];
+          ctx.beginPath();
+          traj.forEach((val, i) => {
+            const x = 40 + i * xScale;
+            const y = height - 30 - val * yScale;
+            i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+          });
+          ctx.stroke();
+        }
+      }
+
+      drawHistogram(ctx, width, height, distribution) {
+        ctx.clearRect(0, 0, width, height);
+        this.drawAxes(ctx, width, height, "Final Count", "Frequency");
+
+        const numBars = distribution.length;
+        const barWidth = (width - 60) / numBars;
+        const maxFreq = Math.max(...distribution, 1);
+        const yScale = (height - 50) / maxFreq;
+
+        ctx.fillStyle = "rgba(70,130,180,0.7)";
+        for (let i = 0; i < numBars; i++) {
+          const barHeight = distribution[i] * yScale;
+          const x = 40 + i * barWidth;
+          const y = height - 30 - barHeight;
+          ctx.fillRect(x, y, barWidth - 2, barHeight);
+          ctx.fillText(i.toString(), x + barWidth / 2 - 4, height - 10);
+        }
+      }
+    }
+
+    // Main event
+    document.getElementById("simForm").addEventListener("submit", e => {
+      e.preventDefault();
+      const T = +document.getElementById("totalTime").value;
+      const n = +document.getElementById("intervals").value;
+      const numAttackers = +document.getElementById("attackers").value;
+      const lambda = +document.getElementById("lambda").value;
+
+      if (T <= 0 || n <= 0 || numAttackers <= 0 || lambda < 0) {
+        alert("All parameters must be positive.");
+        return;
+      }
+      if (lambda * (T/n) > 1) {
+        alert("Invalid: λ·dt must be ≤ 1.");
+        return;
+      }
+
+      const sim = new AttackSimulator(T, n, numAttackers, lambda);
+      sim.simulate();
+
+      const trajCtx = document.getElementById("trajectoryCanvas").getContext("2d");
+      sim.drawTrajectories(trajCtx, 800, 400);
+
+      const { distribution, finalCounts } = sim.computeDistribution();
+      const histCtx = document.getElementById("histogramCanvas").getContext("2d");
+      sim.drawHistogram(histCtx, 400, 400, distribution);
+
+      const mean = finalCounts.reduce((a,b) => a+b,0) / finalCounts.length;
+      const variance = finalCounts.reduce((a,b) => a+b*b,0)/finalCounts.length - mean*mean;
+
+      document.getElementById("stats").innerHTML = `
+        <h3>Statistics</h3>
+        <p>Mean of final counts: ${mean.toFixed(2)}</p>
+        <p>Variance: ${variance.toFixed(2)}</p>`;
+    });
+  </script>
+</body>
+</html>

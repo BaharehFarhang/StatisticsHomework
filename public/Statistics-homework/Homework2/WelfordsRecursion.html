@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Server Penetration Simulation with Distributions & Frequency Trajectories</title>
+  <style>
+    /* Minimal styling for clarity */
+    body {
+      font-family: Arial, sans-serif;
+      padding: 20px;
+    }
+    input, button {
+      margin: 5px;
+    }
+    canvas {
+      border: 1px solid #000;
+      display: block;
+      margin: 10px 0;
+    }
+    .container {
+      margin-bottom: 20px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Server Penetration Simulation</h1>
+  <!-- Parameter inputs -->
+  <div class="container">
+    <label for="servers">Servers (n):</label>
+    <input type="number" id="servers" value="10" min="1">
+    <label for="attackers">Attackers (m):</label>
+    <input type="number" id="attackers" value="4" min="1">
+    <label for="probability">Penetration Probability (p):</label>
+    <input type="number" id="probability" value="0.5" step="0.01" min="0" max="1">
+    <label for="intermediateStep">Intermediate Step (t):</label>
+    <input type="number" id="intermediateStep" value="5" min="1">
+    <button id="startButton">Start Simulation</button>
+  </div>
+  <!-- Checkbox container to toggle each attacker's line -->
+  <div id="checkboxContainer" class="container"></div>
+  
+  <!-- Simulation canvas: shows the random-walk trajectories -->
+  <canvas id="simulationCanvas" width="600" height="400"></canvas>
+  
+  <!-- Final distribution histogram container -->
+  <div id="histogramContainer" class="container"></div>
+  
+  <!-- Intermediate distribution histogram container -->
+  <div id="intermediateHistogramContainer" class="container"></div>
+  
+  <!-- Frequency trajectories canvas: absolute (red) and relative (green) -->
+  <canvas id="frequencyCanvas" width="600" height="300"></canvas>
+  
+  <!-- Stats container: displays mean and variance for both distributions -->
+  <div id="statsContainer" class="container"></div>
+
+  <script>
+    "use strict";
+
+    /**
+     * ServerPenetrationSimulation implements:
+     * A. A random-walk simulation where at each server an attacker goes +1 (penetration) with probability p
+     *    or -1 (failure) with probability 1-p.
+     * B. It computes and draws absolute and relative frequency trajectories over the servers.
+     * C. It computes both the final distribution (at server n) and an intermediate distribution (at a selectable step t),
+     *    drawing each as a histogram with mean and variance.
+     *
+     * All code is written in plain modern JavaScript (ES6+).
+     */
+    class ServerPenetrationSimulation {
+      constructor() {
+        // Canvas dimensions and padding.
+        this.simWidth = 600;
+        this.simHeight = 400;
+        this.histWidth = 600;
+        this.histHeight = 300;
+        this.freqWidth = 600;
+        this.freqHeight = 300;
+        this.padding = 50;
+        
+        // Default simulation parameters.
+        this.n = 10; // number of servers (steps)
+        this.m = 4;  // number of attackers
+        this.p = 0.5; // penetration probability
+        
+        // State variables.
+        this.colors = [];
+        this.checkboxes = [];
+        // penetrationResults: for each attacker and server, store +1 or -1.
+        this.penetrationResults = [];
+        // cumulativeTrajectories: net penetration per attacker at each server.
+        this.cumulativeTrajectories = [];
+        
+        // DOM elements.
+        this.serversInput = document.getElementById("servers");
+        this.attackersInput = document.getElementById("attackers");
+        this.probabilityInput = document.getElementById("probability");
+        this.intermediateInput = document.getElementById("intermediateStep");
+        this.startButton = document.getElementById("startButton");
+        this.checkboxContainer = document.getElementById("checkboxContainer");
+        this.simCanvas = document.getElementById("simulationCanvas");
+        this.histContainer = document.getElementById("histogramContainer");
+        this.interHistContainer = document.getElementById("intermediateHistogramContainer");
+        this.freqCanvas = document.getElementById("frequencyCanvas");
+        this.statsContainer = document.getElementById("statsContainer");
+        
+        // Setup high-resolution canvases.
+        this.simCtx = this.setupCanvas(this.simCanvas, this.simWidth, this.simHeight);
+        this.freqCtx = this.setupCanvas(this.freqCanvas, this.freqWidth, this.freqHeight);
+      }
+
+      // Initialize listeners and auto-run simulation.
+      init() {
+        this.startButton.addEventListener("click", () => this.startSimulation());
+        this.startSimulation();
+      }
+
+      // Setup canvas with devicePixelRatio scaling.
+      setupCanvas(canvas, width, height) {
+        const dpr = window.devicePixelRatio || 1;
+        canvas.width = width * dpr;
+        canvas.height = height * dpr;
+        canvas.style.width = width + "px";
+        canvas.style.height = height + "px";
+        const ctx = canvas.getContext("2d");
+        ctx.scale(dpr, dpr);
+        return ctx;
+      }
+
+      // Main simulation function.
+      startSimulation() {
+        // Read parameters.
+        this.n = parseInt(this.serversInput.value, 10);
+        this.m = parseInt(this.attackersInput.value, 10);
+        this.p = parseFloat(this.probabilityInput.value);
+        let t = parseInt(this.intermediateInput.value, 10);
+        if (t > this.n) t = this.n; // ensure intermediate step does not exceed total steps.
+
+        // Generate unique colors for attackers.
+        this.colors = this.generateUniqueColors(this.m);
+        
+        // Initialize result arrays.
+        this.penetrationResults = Array.from({ length: this.m }, () => Array(this.n).fill(0));
+        this.cumulativeTrajectories = Array.from({ length: this.m }, () => []);
+        
+        // Create checkboxes for each attacker.
+        this.checkboxContainer.innerHTML = "";
+        this.checkboxes = [];
+        for (let i = 0; i < this.m; i++) {
+          const label = document.createElement("label");
+          label.textContent = "Hacker " + (i + 1);
+          const checkbox = document.createElement("input");
+          checkbox.type = "checkbox";
+          checkbox.checked = true;
+          checkbox.addEventListener("change", () => {
+            this.clearSimArea();
+            this.drawSimAxes();
+            this.drawSimulation();
+          });
+          this.checkboxes.push(checkbox);
+          label.prepend(checkbox);
+          this.checkboxContainer.appendChild(label);
+        }
+
+        // Simulate each attacker’s trajectory.
+        for (let attacker = 0; attacker < this.m; attacker++) {
+          let cumulative = 0;
+          for (let server = 0; server < this.n; server++) {
+            // Outcome: +1 (penetration) with probability p; -1 (failure) otherwise.
+            const outcome = Math.random() < this.p ? 1 : -1;
+            this.penetrationResults[attacker][server] = outcome;
+            cumulative += outcome;
+            this.cumulativeTrajectories[attacker].push(cumulative);
+          }
+        }
+
+        // Draw simulation trajectories.
+        this.clearSimArea();
+        this.drawSimAxes();
+        this.drawSimulation();
+
+        // Compute histograms.
+        const finalHistogram = this.computeHistogramFinal();
+        const interHistogram = this.computeHistogramIntermediate(t);
+
+        // Draw histograms.
+        this.drawFinalHistogram(finalHistogram);
+        this.drawIntermediateHistogram(interHistogram, t);
+
+        // Compute stats.
+        const finalStats = this.computeStats(finalHistogram, -this.n);
+        const interStats = this.computeStats(interHistogram, -t);
+
+        // Draw frequency trajectories.
+        this.drawFrequencyTrajectories();
+
+        // Display mean and variance.
+        this.displayStats(finalStats, interStats, t);
+      }
+
+      // Clear simulation canvas.
+      clearSimArea() {
+        this.simCtx.clearRect(0, 0, this.simWidth, this.simHeight);
+      }
+
+      // Draw axes on the simulation canvas.
+      // Y‑axis runs from -n to n with 0 centered.
+      drawSimAxes() {
+        const minY = -this.n;
+        const maxY = this.n;
+        const rangeY = maxY - minY;
+        const stepY = (this.simHeight - 2 * this.padding) / rangeY;
+        const zeroY = this.padding + (maxY * stepY);
+        
+        // Horizontal axis at y = 0.
+        this.simCtx.beginPath();
+        this.simCtx.moveTo(this.padding, zeroY);
+        this.simCtx.lineTo(this.simWidth - this.padding, zeroY);
+        this.simCtx.stroke();
+        
+        // Vertical axis.
+        this.simCtx.beginPath();
+        this.simCtx.moveTo(this.padding, this.padding);
+        this.simCtx.lineTo(this.padding, this.simHeight - this.padding);
+        this.simCtx.stroke();
+
+        // Axis labels.
+        this.simCtx.font = "16px Arial";
+        this.simCtx.textAlign = "center";
+        this.simCtx.fillText("Server", this.simWidth / 2, this.simHeight - 10);
+        this.simCtx.save();
+        this.simCtx.translate(15, this.simHeight / 2);
+        this.simCtx.rotate(-Math.PI / 2);
+        this.simCtx.fillText("Net Penetration", 0, 0);
+        this.simCtx.restore();
+
+        // X-axis tick marks (server indices).
+        const stepX = (this.simWidth - 2 * this.padding) / this.n;
+        this.simCtx.font = "12px Arial";
+        for (let i = 0; i < this.n; i++) {
+          const x = this.padding + (i + 0.5) * stepX;
+          this.simCtx.fillText(i, x, this.simHeight - this.padding + 15);
+        }
+
+        // Y-axis tick marks.
+        this.simCtx.textAlign = "right";
+        for (let j = minY; j <= maxY; j++) {
+          const y = zeroY - j * stepY;
+          this.simCtx.fillText(j, this.padding - 5, y + 4);
+        }
+      }
+
+      // Draw simulation lines (trajectories) for each attacker.
+      drawSimulation() {
+        this.clearSimArea();
+        this.drawSimAxes();
+        const stepX = (this.simWidth - 2 * this.padding) / this.n;
+        const minY = -this.n, maxY = this.n;
+        const rangeY = maxY - minY;
+        const stepY = (this.simHeight - 2 * this.padding) / rangeY;
+        const zeroY = this.padding + (maxY * stepY);
+
+        for (let attacker = 0; attacker < this.m; attacker++) {
+          if (!this.checkboxes[attacker].checked) continue;
+          let traj = this.cumulativeTrajectories[attacker];
+          this.simCtx.beginPath();
+          let x = this.padding;
+          let y = zeroY;
+          this.simCtx.moveTo(x, y);
+          for (let server = 0; server < traj.length; server++) {
+            x = this.padding + (server + 1) * stepX;
+            y = zeroY - traj[server] * stepY;
+            this.simCtx.lineTo(x, y);
+          }
+          this.simCtx.strokeStyle = this.colors[attacker];
+          this.simCtx.lineWidth = 2;
+          this.simCtx.stroke();
+        }
+      }
+
+      // Compute final histogram (net penetration at server n).
+      computeHistogramFinal() {
+        const bins = 2 * this.n + 1; // values from -n to n.
+        let histogram = Array(bins).fill(0);
+        for (let attacker = 0; attacker < this.m; attacker++) {
+          const finalValue = this.cumulativeTrajectories[attacker][this.n - 1];
+          const index = finalValue + this.n;
+          histogram[index]++;
+        }
+        return histogram;
+      }
+
+      // Compute intermediate histogram (net penetration at step t).
+      computeHistogramIntermediate(t) {
+        const bins = 2 * t + 1; // values from -t to t.
+        let histogram = Array(bins).fill(0);
+        for (let attacker = 0; attacker < this.m; attacker++) {
+          const value = this.cumulativeTrajectories[attacker][t - 1];
+          const index = value + t;
+          histogram[index]++;
+        }
+        return histogram;
+      }
+
+      // Draw the final histogram in the histContainer.
+      drawFinalHistogram(histogram) {
+        this.histContainer.innerHTML = "";
+        const histCanvas = document.createElement("canvas");
+        histCanvas.width = this.histWidth;
+        histCanvas.height = this.histHeight;
+        histCanvas.style.border = "1px solid #000";
+        this.histContainer.appendChild(histCanvas);
+        const ctx = this.setupCanvas(histCanvas, this.histWidth, this.histHeight);
+
+        // Axes.
+        ctx.beginPath();
+        ctx.moveTo(50, this.histHeight - 40);
+        ctx.lineTo(this.histWidth - 20, this.histHeight - 40);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(50, this.histHeight - 40);
+        ctx.lineTo(50, 20);
+        ctx.stroke();
+
+        // Labels.
+        ctx.font = "16px Arial";
+        ctx.textAlign = "center";
+        ctx.fillText("Final Net Penetration", this.histWidth / 2, this.histHeight - 10);
+        ctx.save();
+        ctx.translate(15, this.histHeight / 2);
+        ctx.rotate(-Math.PI / 2);
+        ctx.fillText("Frequency", 0, 0);
+        ctx.restore();
+
+        // Draw bars.
+        const bins = histogram.length;
+        const barWidth = (this.histWidth - 70) / bins;
+        const maxFreq = Math.max(...histogram);
+        const scaleY = (this.histHeight - 60) / maxFreq;
+        for (let i = 0; i < bins; i++) {
+          const x = 50 + i * barWidth;
+          const barHeight = histogram[i] * scaleY;
+          ctx.fillStyle = "#4285F4";
+          ctx.fillRect(x, this.histHeight - 40 - barHeight, barWidth - 2, barHeight);
+          ctx.fillStyle = "#000";
+          ctx.textAlign = "center";
+          const label = i - this.n; // bin value from -n to n.
+          ctx.fillText(label, x + (barWidth - 2) / 2, this.histHeight - 25);
+          ctx.fillText(histogram[i], x + (barWidth - 2) / 2, this.histHeight - 40 - barHeight - 5);
+        }
+      }
+
+      // Draw the intermediate histogram in interHistContainer.
+      drawIntermediateHistogram(histogram, t) {
+        this.interHistContainer.innerHTML = "";
+        const histCanvas = document.createElement("canvas");
+        histCanvas.width = this.histWidth;
+        histCanvas.height = this.histHeight;
+        histCanvas.style.border = "1px solid #000";
+        this.interHistContainer.appendChild(histCanvas);
+        const ctx = this.setupCanvas(histCanvas, this.histWidth, this.histHeight);
+
+        // Axes.
+        ctx.beginPath();
+        ctx.moveTo(50, this.histHeight - 40);
+        ctx.lineTo(this.histWidth - 20, this.histHeight - 40);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(50, this.histHeight - 40);
+        ctx.lineTo(50, 20);
+        ctx.stroke();
+
+        // Labels.
+        ctx.font = "16px Arial";
+        ctx.textAlign = "center";
+        ctx.fillText(`Intermediate Net Penetration (t = ${t})`, this.histWidth / 2, this.histHeight - 10);
+        ctx.save();
+        ctx.translate(15, this.histHeight / 2);
+        ctx.rotate(-Math.PI / 2);
+        ctx.fillText("Frequency", 0, 0);
+        ctx.restore();
+
+        // Draw bars.
+        const bins = histogram.length;
+        const barWidth = (this.histWidth - 70) / bins;
+        const maxFreq = Math.max(...histogram);
+        const scaleY = (this.histHeight - 60) / maxFreq;
+        for (let i = 0; i < bins; i++) {
+          const x = 50 + i * barWidth;
+          const barHeight = histogram[i] * scaleY;
+          ctx.fillStyle = "#DB4437";
+          ctx.fillRect(x, this.histHeight - 40 - barHeight, barWidth - 2, barHeight);
+          ctx.fillStyle = "#000";
+          ctx.textAlign = "center";
+          const label = i - t; // bin value from -t to t.
+          ctx.fillText(label, x + (barWidth - 2) / 2, this.histHeight - 25);
+          ctx.fillText(histogram[i], x + (barWidth - 2) / 2, this.histHeight - 40 - barHeight - 5);
+        }
+      }
+
+      // Compute mean and variance for a histogram.
+      // histogram: array of frequencies; minVal: value corresponding to index 0.
+      computeStats(histogram, minVal) {
+        const total = histogram.reduce((sum, count) => sum + count, 0);
+        let mean = 0;
+        for (let i = 0; i < histogram.length; i++) {
+          const value = i + minVal;
+          mean += value * histogram[i];
+        }
+        mean /= total;
+        let variance = 0;
+        for (let i = 0; i < histogram.length; i++) {
+          const value = i + minVal;
+          variance += histogram[i] * Math.pow(value - mean, 2);
+        }
+        variance /= total;
+        return { mean, variance };
+      }
+
+      // Draw absolute and relative frequency trajectories on the frequency canvas.
+      drawFrequencyTrajectories() {
+        this.freqCtx.clearRect(0, 0, this.freqWidth, this.freqHeight);
+        let absoluteFreq = Array(this.n).fill(0);
+        let relativeFreq = Array(this.n).fill(0);
+        for (let server = 0; server < this.n; server++) {
+          let sum = 0;
+          for (let attacker = 0; attacker < this.m; attacker++) {
+            sum += this.cumulativeTrajectories[attacker][server];
+          }
+          absoluteFreq[server] = sum;
+          relativeFreq[server] = sum / this.m;
+        }
+
+        // Axes.
+        const margin = 50;
+        const xStep = (this.freqWidth - 2 * margin) / (this.n - 1);
+        const minAbs = Math.min(...absoluteFreq);
+        const maxAbs = Math.max(...absoluteFreq);
+        const overallMin = Math.min(minAbs, Math.min(...relativeFreq));
+        const overallMax = Math.max(maxAbs, Math.max(...relativeFreq));
+        const yRange = overallMax - overallMin || 1;
+        const yStep = (this.freqHeight - 2 * margin) / yRange;
+        this.freqCtx.beginPath();
+        this.freqCtx.moveTo(margin, this.freqHeight - margin);
+        this.freqCtx.lineTo(this.freqWidth - margin, this.freqHeight - margin);
+        this.freqCtx.stroke();
+        this.freqCtx.beginPath();
+        this.freqCtx.moveTo(margin, margin);
+        this.freqCtx.lineTo(margin, this.freqHeight - margin);
+        this.freqCtx.stroke();
+
+        // Axis labels.
+        this.freqCtx.font = "16px Arial";
+        this.freqCtx.textAlign = "center";
+        this.freqCtx.fillText("Server", this.freqWidth / 2, this.freqHeight - 10);
+        this.freqCtx.save();
+        this.freqCtx.translate(15, this.freqHeight / 2);
+        this.freqCtx.rotate(-Math.PI / 2);
+        this.freqCtx.fillText("Frequency", 0, 0);
+        this.freqCtx.restore();
+
+        // Draw absolute frequency line (red).
+        this.freqCtx.beginPath();
+        for (let i = 0; i < this.n; i++) {
+          let x = margin + i * xStep;
+          let y = this.freqHeight - margin - ((absoluteFreq[i] - overallMin) * yStep);
+          if (i === 0) this.freqCtx.moveTo(x, y);
+          else this.freqCtx.lineTo(x, y);
+        }
+        this.freqCtx.strokeStyle = "red";
+        this.freqCtx.lineWidth = 2;
+        this.freqCtx.stroke();
+        this.freqCtx.fillStyle = "red";
+        this.freqCtx.fillText("Absolute Frequency", this.freqWidth / 2, margin + 15);
+
+        // Draw relative frequency line (green).
+        this.freqCtx.beginPath();
+        for (let i = 0; i < this.n; i++) {
+          let x = margin + i * xStep;
+          let y = this.freqHeight - margin - ((relativeFreq[i] - overallMin) * yStep);
+          if (i === 0) this.freqCtx.moveTo(x, y);
+          else this.freqCtx.lineTo(x, y);
+        }
+        this.freqCtx.strokeStyle = "green";
+        this.freqCtx.lineWidth = 2;
+        this.freqCtx.stroke();
+        this.freqCtx.fillStyle = "green";
+        this.freqCtx.fillText("Relative Frequency", this.freqWidth / 2, margin + 35);
+      }
+
+      // Display computed mean and variance for final and intermediate distributions.
+      displayStats(finalStats, interStats, t) {
+        this.statsContainer.innerHTML = `
+          <h3>Statistics</h3>
+          <p><strong>Final Distribution</strong> (over ${this.m} attackers): Mean = ${finalStats.mean.toFixed(2)}, Variance = ${finalStats.variance.toFixed(2)}</p>
+          <p><strong>Intermediate Distribution</strong> (t = ${t}): Mean = ${interStats.mean.toFixed(2)}, Variance = ${interStats.variance.toFixed(2)}</p>
+        `;
+      }
+
+      // Generate an array of unique colors using HSL.
+      generateUniqueColors(num) {
+        const colors = [];
+        while (colors.length < num) {
+          const color = `hsl(${Math.random() * 360}, 100%, 50%)`;
+          if (!colors.includes(color)) {
+            colors.push(color);
+          }
+        }
+        return colors;
+      }
+    }
+
+    // Initialize the simulation when the page loads.
+    const simulation = new ServerPenetrationSimulation();
+    simulation.init();
+  </script>
+</body>
+</html>
