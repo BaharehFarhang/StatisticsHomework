@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Discrete Distribution Simulation</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; margin: 24px; }
+    h1 { margin-bottom: 6px; }
+    .row { display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start; }
+    .card { border: 1px solid #ddd; border-radius: 10px; padding: 14px 16px; }
+    .controls button { padding: 8px 14px; border-radius: 8px; border: 1px solid #ccc; cursor: pointer; }
+    .stats table { border-collapse: collapse; }
+    .stats td { padding: 4px 10px; border-bottom: 1px dotted #eee; }
+    #histCanvas { border: 1px solid #ccc; border-radius: 10px; }
+    .muted { color: #666; font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <h1>Discrete Distribution Simulation</h1>
+  <p class="muted">Blue bars = empirical probabilities; red segments = theoretical probabilities.</p>
+
+  <div class="row">
+    <div class="card stats">
+      <h3>Theoretical</h3>
+      <table>
+        <tr><td>Mean</td><td id="theoMean">–</td></tr>
+        <tr><td>Variance</td><td id="theoVar">–</td></tr>
+      </table>
+      <h3 style="margin-top:12px;">Empirical (Online)</h3>
+      <table>
+        <tr><td>Samples</td><td id="sampleCount">0</td></tr>
+        <tr><td>Mean</td><td id="empMean">0.000</td></tr>
+        <tr><td>Variance (population)</td><td id="empVar">0.000</td></tr>
+        <!-- Optional extra lines (will fill if present) -->
+        <tr><td class="muted">Variance (sample)</td><td id="empVarSample" class="muted">—</td></tr>
+        <tr><td class="muted">L1 distance |p̂−p|</td><td id="distError" class="muted">—</td></tr>
+      </table>
+      <div class="controls" style="margin-top:12px;">
+        <button id="startBtn">Start</button>
+        <button id="resetBtn">Reset</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <!-- Set explicit width/height attributes (important for canvas) -->
+      <canvas id="histCanvas" width="700" height="420"></canvas>
+    </div>
+  </div>
+
+  <script defer>
+  "use strict";
+
+  /* =========================
+     CONFIG
+     ========================= */
+  const outcomes      = [0, 1, 2, 3];
+  const probabilities = [0.10, 0.30, 0.40, 0.20];
+
+  // Chart options
+  const CHART = {
+    barColor: "#4285F4",
+    theoColor: "#D93025",
+    axisColor: "#000",
+    margin: 40,
+  };
+
+  // Simulation pacing (ms/sample)
+  const STEP_DELAY_MS = 50;
+
+  /* =========================
+     UTILITIES
+     ========================= */
+  const $ = (id) => document.getElementById(id);
+
+  function safeText(id, text) {
+    const el = $(id);
+    if (el) el.textContent = text;
+  }
+
+  function sum(arr) { return arr.reduce((a, b) => a + b, 0); }
+  function almostEqual(a, b, eps = 1e-12) { return Math.abs(a - b) <= eps; }
+
+  function validatedDistribution(xs, ps) {
+    if (!Array.isArray(xs) || !Array.isArray(ps) || xs.length === 0 || xs.length !== ps.length) {
+      throw new Error("Outcomes and probabilities must be non-empty arrays of equal length.");
+    }
+    if (ps.some((p) => p < 0)) throw new Error("Probabilities must be nonnegative.");
+    const s = sum(ps);
+    if (s === 0) throw new Error("At least one probability must be positive.");
+    const normalized = almostEqual(s, 1) ? ps.slice() : ps.map((p) => p / s);
+    return { xs: xs.slice(), ps: normalized };
+  }
+
+  function cumulative(ps) {
+    const cp = [];
+    let acc = 0;
+    for (let i = 0; i < ps.length; i++) {
+      acc += ps[i];
+      cp.push(acc);
+    }
+    cp[cp.length - 1] = 1; // clamp last to 1
+    return cp;
+  }
+
+  /* =========================
+     THEORETICAL STATS
+     ========================= */
+  const { xs: X, ps: P } = validatedDistribution(outcomes, probabilities);
+  const CUM = cumulative(P);
+
+  const theoMean = X.reduce((a, x, i) => a + x * P[i], 0);
+  const theoVar  = X.reduce((a, x, i) => a + P[i] * Math.pow(x - theoMean, 2), 0);
+
+  safeText("theoMean", theoMean.toFixed(3));
+  safeText("theoVar",  theoVar.toFixed(3));
+
+  /* =========================
+     STATE (Empirical, Online)
+     ========================= */
+  let n = 0;
+  let mean = 0;    // Welford mean
+  let M2 = 0;      // Welford sum of squares of diffs
+  const counts = new Array(X.length).fill(0);
+
+  function currentEmpiricalProbs() {
+    if (n === 0) return counts.map(() => 0);
+    return counts.map((c) => c / n);
+  }
+
+  /* =========================
+     SAMPLING
+     ========================= */
+  function sampleDiscrete(xs, cumProbs) {
+    const r = Math.random(); // in [0,1)
+    for (let i = 0; i < cumProbs.length; i++) {
+      if (r < cumProbs[i]) return xs[i];
+    }
+    return xs[xs.length - 1]; // fallback
+  }
+
+  function step() {
+    const x = sampleDiscrete(X, CUM);
+    n++;
+
+    // Update histogram
+    const idx = X.indexOf(x);
+    counts[idx]++;
+
+    // Welford updates
+    const delta = x - mean;
+    mean += delta / n;
+    M2   += delta * (x - mean);
+
+    refreshStatsAndPlot();
+  }
+
+  /* =========================
+     DISPLAY: Stats
+     ========================= */
+  function refreshStatsAndPlot() {
+    const popVar    = n > 0 ? M2 / n : 0;        // population variance (compare to theoretical)
+    const sampleVar = n > 1 ? M2 / (n - 1) : 0;  // optional display
+
+    safeText("sampleCount", String(n));
+    safeText("empMean", mean.toFixed(3));
+    safeText("empVar", popVar.toFixed(3));
+    safeText("empVarSample", sampleVar.toFixed(3)); // shown only if element exists
+
+    // Optional: distribution L1 error (sum |p_hat - p|)
+    const empP = currentEmpiricalProbs();
+    const l1 = empP.reduce((a, p, i) => a + Math.abs(p - P[i]), 0);
+    safeText("distError", l1.toFixed(3)); // shown only if element exists
+
+    drawHistogram(empP);
+  }
+
+  /* =========================
+     DISPLAY: Histogram Canvas
+     ========================= */
+  const canvas = $("histCanvas");
+  const ctx    = canvas.getContext("2d");
+  const W = canvas.width;
+  const H = canvas.height;
+  const M = CHART.margin;
+
+  function drawAxesAndTicks(maxY = 1) {
+    ctx.strokeStyle = CHART.axisColor;
+    ctx.lineWidth = 1;
+
+    // Axes
+    ctx.beginPath();
+    ctx.moveTo(M, H - M);
+    ctx.lineTo(W - M, H - M); // X
+    ctx.moveTo(M, H - M);
+    ctx.lineTo(M, M);         // Y
+    ctx.stroke();
+
+    // Y ticks (0..1)
+    ctx.fillStyle = CHART.axisColor;
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    ctx.font = "12px Arial";
+    const ticks = 4;
+    for (let i = 0; i <= ticks; i++) {
+      const yVal = (i / ticks) * maxY;
+      const yPix = H - M - (yVal / maxY) * (H - 2 * M);
+      ctx.beginPath();
+      ctx.moveTo(M - 5, yPix);
+      ctx.lineTo(M, yPix);
+      ctx.stroke();
+      ctx.fillText(yVal.toFixed(2), M - 8, yPix);
+    }
+
+    // Axis labels
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    ctx.fillText("Outcome", (W) / 2, H - M + 18);
+
+    ctx.save();
+    ctx.translate(16, H / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.textAlign = "center";
+    ctx.textBaseline = "bottom";
+    ctx.fillText("Probability", 0, 0);
+    ctx.restore();
+
+    // Legend
+    ctx.fillStyle = CHART.barColor;
+    ctx.fillRect(W - M - 160, M - 8, 14, 14);
+    ctx.fillStyle = CHART.axisColor;
+    ctx.fillText("Empirical", W - M - 110, M + 4);
+    ctx.strokeStyle = CHART.theoColor;
+    ctx.beginPath();
+    ctx.moveTo(W - M - 70, M);
+    ctx.lineTo(W - M - 30, M);
+    ctx.stroke();
+    ctx.fillStyle = CHART.axisColor;
+    ctx.fillText("Theoretical", W - M - 20, M + 4);
+  }
+
+  function drawHistogram(empProbs) {
+    ctx.clearRect(0, 0, W, H);
+    drawAxesAndTicks(1); // probabilities max at 1
+
+    const innerW = W - 2 * M;
+    const innerH = H - 2 * M;
+    const barW = innerW / X.length;
+
+    for (let i = 0; i < X.length; i++) {
+      const pEmp  = empProbs[i] || 0;
+      const pTheo = P[i];
+
+      const hEmp  = pEmp  * innerH;
+      const yEmp  = H - M - hEmp;
+      const x     = M + i * barW;
+
+      // Empirical bar
+      ctx.fillStyle = CHART.barColor;
+      ctx.fillRect(x + 1, yEmp, barW - 2, hEmp);
+
+      // Theoretical segment
+      const yTheo = H - M - (pTheo * innerH);
+      ctx.strokeStyle = CHART.theoColor;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(x + 2, yTheo);
+      ctx.lineTo(x + barW - 2, yTheo);
+      ctx.stroke();
+
+      // X tick label
+      ctx.fillStyle = CHART.axisColor;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      ctx.font = "13px Arial";
+      ctx.fillText(String(X[i]), x + barW / 2, H - M + 6);
+
+      // Numeric p̂ above bar
+      if (n > 0) {
+        ctx.textBaseline = "bottom";
+        ctx.fillText(pEmp.toFixed(2), x + barW / 2, yEmp - 4);
+      }
+    }
+  }
+
+  /* =========================
+     CONTROLS
+     ========================= */
+  let timer = null;
+
+  $("startBtn").addEventListener("click", () => {
+    if (!timer) timer = setInterval(step, STEP_DELAY_MS);
+  });
+
+  $("resetBtn").addEventListener("click", () => {
+    if (timer) { clearInterval(timer); timer = null; }
+    n = 0; mean = 0; M2 = 0; counts.fill(0);
+    safeText("sampleCount", "0");
+    safeText("empMean", "0.000");
+    safeText("empVar", "0.000");
+    safeText("empVarSample", "—");
+    safeText("distError", "—");
+    drawHistogram(currentEmpiricalProbs());
+  });
+
+  // Initial render
+  window.addEventListener("load", () => {
+    drawHistogram(currentEmpiricalProbs());
+  });
+  </script>
+</body>
+</html>

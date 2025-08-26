@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Variance Sampler Lab</title>
+  <style>
+    :root{
+      --ink:#2b2b2b;
+      --paper:#f4f6f8;
+      --card:#ffffff;
+      --accent:#2563eb;
+      --accent-2:#10b981;
+      --muted:#d1d5db;
+    }
+    html,body{
+      margin:0;
+      padding:0;
+      background:var(--paper);
+      color:var(--ink);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    }
+    header{
+      text-align:center;
+      padding:24px 16px 8px;
+    }
+    .lab-wrap{
+      max-width: 980px;
+      padding: 0 16px 32px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 16px;
+    }
+    .panel{
+      background:var(--card);
+      border:1px solid var(--muted);
+      border-radius:12px;
+      padding:16px;
+      box-shadow: 0 2px 10px rgba(0,0,0,.03);
+    }
+    .grid{
+      display:grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap:12px;
+      align-items:end;
+    }
+    .field{
+      display:flex;
+      flex-direction:column;
+      gap:6px;
+    }
+    .field label{
+      font-size: 13px;
+      opacity:.8;
+    }
+    .field input[type="text"],
+    .field input[type="number"],
+    .field input[type="range"]{
+      padding:10px 12px;
+      border:1px solid var(--muted);
+      border-radius:8px;
+      outline:none;
+      background:#fff;
+    }
+    .row{
+      display:flex; gap:12px; align-items:center; flex-wrap:wrap;
+    }
+    .row .check{
+      display:flex; align-items:center; gap:8px;
+      padding:8px 10px; border:1px dashed var(--muted);
+      border-radius:8px; background:#fafafa;
+    }
+    .actions{
+      display:flex; gap:10px; flex-wrap:wrap; align-items:center;
+    }
+    .btn{
+      appearance:none; border:0; border-radius:9px; cursor:pointer;
+      padding:10px 16px; font-weight:600;
+      background:var(--accent); color:white;
+    }
+    .btn:hover{ filter:brightness(0.95); }
+    .hint{ font-size:12px; color:#555 }
+    canvas{
+      background:#fff;
+      border:1px solid var(--muted);
+      border-radius:12px;
+      width:100%; height:340px;
+    }
+    .stats{
+      display:grid; grid-template-columns: repeat(auto-fit, minmax(220px,1fr));
+      gap:12px;
+    }
+    .kpi{
+      background:#fff; border:1px solid var(--muted); border-radius:12px; padding:12px;
+    }
+    .kpi strong{ display:block; font-size:12px; opacity:.7; }
+    .kpi span{ font-size:20px; font-weight:700; }
+    .msg{ font-size: 13px; color:#a16207; background:#fef3c7; border:1px solid #fbbf24; padding:8px 10px; border-radius:8px; display:none; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Variance Sampler Lab</h1>
+    <p class="hint">Simulate the distribution of sample variances from a discrete parent distribution.</p>
+  </header>
+
+  <main class="lab-wrap">
+    <section class="panel" id="controlBox">
+      <div id="msg" class="msg"></div>
+      <div class="grid">
+        <div class="field">
+          <label for="txtValues">Support values (comma-separated)</label>
+          <input id="txtValues" type="text" value="1,2,3,4,5" />
+        </div>
+        <div class="field">
+          <label for="txtWeights">Probabilities / weights (comma-separated)</label>
+          <input id="txtWeights" type="text" value="0.1,0.2,0.3,0.2,0.2" />
+        </div>
+        <div class="field">
+          <label for="nSize">Sample size (n)</label>
+          <input id="nSize" type="number" value="30" min="1" />
+        </div>
+        <div class="field">
+          <label for="mRepeats">Number of samples (m)</label>
+          <input id="mRepeats" type="number" value="1000" min="1" />
+        </div>
+        <div class="field">
+          <label for="binSlider">Histogram bins: <span id="binLabel">20</span></label>
+          <input id="binSlider" type="range" min="5" max="60" step="1" value="20"/>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:10px;">
+        <label class="check">
+          <input id="chkBessel" type="checkbox" checked />
+          <span>Use Bessel correction (divide by n−1)</span>
+        </label>
+        <div class="actions">
+          <button class="btn" id="btnRun">Run simulation</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2 style="margin-top:0;">Distribution of Sample Variances</h2>
+      <canvas id="chartVar" width="900" height="360"></canvas>
+      <p class="hint">Vertical lines: <em style="color:var(--accent)">parent variance</em> and <em style="color:var(--accent-2)">mean of sampled variances</em>.</p>
+    </section>
+
+    <section class="stats">
+      <div class="kpi">
+        <strong>Parent mean (μ)</strong>
+        <span id="outMu">–</span>
+      </div>
+      <div class="kpi">
+        <strong>Parent variance (σ²)</strong>
+        <span id="outSigma2">–</span>
+      </div>
+      <div class="kpi">
+        <strong>Avg of sample variances</strong>
+        <span id="outAvgVar">–</span>
+      </div>
+      <div class="kpi">
+        <strong>Variance of variances</strong>
+        <span id="outVarOfVar">–</span>
+      </div>
+    </section>
+
+    <section class="panel">
+      <p>
+        <em>Note.</em> With Bessel’s correction (divide by n−1), the expected sample variance is an unbiased
+        estimator of the parent variance. Without it (divide by n), the estimate is biased low by a factor (n−1)/n.
+      </p>
+    </section>
+  </main>
+
+  <script>
+    "use strict";
+
+    class VarianceExplorer {
+      constructor() {
+        // DOM refs
+        this.valuesEl = document.getElementById("txtValues");
+        this.weightsEl = document.getElementById("txtWeights");
+        this.nEl = document.getElementById("nSize");
+        this.mEl = document.getElementById("mRepeats");
+        this.besselEl = document.getElementById("chkBessel");
+        this.binEl = document.getElementById("binSlider");
+        this.binLabelEl = document.getElementById("binLabel");
+        this.msgEl = document.getElementById("msg");
+
+        this.outMu = document.getElementById("outMu");
+        this.outSigma2 = document.getElementById("outSigma2");
+        this.outAvgVar = document.getElementById("outAvgVar");
+        this.outVarOfVar = document.getElementById("outVarOfVar");
+
+        this.canvas = document.getElementById("chartVar");
+        this.ctx = this.canvas.getContext("2d");
+
+        // state
+        this.support = [];
+        this.probs = [];
+        this.cdf = [];
+
+        // events
+        document.getElementById("btnRun").addEventListener("click", () => this.run());
+        this.binEl.addEventListener("input", () => {
+          this.binLabelEl.textContent = this.binEl.value;
+        });
+
+        // initial compute
+        this.run();
+      }
+
+      // ---------- utilities ----------
+      mean(arr){ return arr.reduce((a,b)=>a+b,0) / arr.length; }
+      variance(arr){
+        const mu = this.mean(arr);
+        return arr.reduce((s,x)=> s + (x-mu)*(x-mu), 0) / arr.length;
+      }
+      sum(arr){ return arr.reduce((a,b)=>a+b,0); }
+
+      parseInputs(){
+        // reset msg
+        this.msgEl.style.display = "none";
+        this.msgEl.textContent = "";
+
+        const vals = this.valuesEl.value.split(",").map(s => Number(s.trim()));
+        const wts = this.weightsEl.value.split(",").map(s => Number(s.trim()));
+
+        if (vals.some(v => Number.isNaN(v)) || wts.some(w => Number.isNaN(w)) || vals.length !== wts.length || vals.length === 0){
+          this.showMsg("Please provide the same number of numeric values and probabilities.");
+          return false;
+        }
+        let total = this.sum(wts);
+        if (total <= 0){
+          this.showMsg("Probabilities/weights must be positive.");
+          return false;
+        }
+
+        // If not close to 1, normalize and inform.
+        if (Math.abs(total - 1) > 0.01){
+          const fixed = wts.map(w => w / total);
+          this.showMsg("Probabilities were auto-normalized to sum to 1.");
+          this.probs = fixed;
+        } else {
+          this.probs = wts;
+        }
+        this.support = vals;
+
+        // Build CDF for sampling
+        let acc = 0;
+        this.cdf = this.probs.map(p => (acc += p));
+
+        // Parent stats (correctly computed as ∑ v·p and ∑ p (v−μ)^2)
+        const mu = this.support.reduce((s, v, i) => s + v * this.probs[i], 0);
+        const sigma2 = this.support.reduce((s, v, i) => s + this.probs[i] * (v - mu) * (v - mu), 0);
+        this.outMu.textContent = mu.toFixed(3);
+        this.outSigma2.textContent = sigma2.toFixed(3);
+
+        this.parentMean = mu;
+        this.parentVar = sigma2;
+        return true;
+      }
+
+      showMsg(text){
+        this.msgEl.textContent = text;
+        this.msgEl.style.display = "block";
+      }
+
+      sampleOne(){
+        const r = Math.random();
+        for (let i=0;i<this.cdf.length;i++){
+          if (r < this.cdf[i]) return this.support[i];
+        }
+        return this.support[this.support.length-1];
+      }
+
+      run(){
+        if (!this.parseInputs()) return;
+
+        const n = Number(this.nEl.value);
+        const m = Number(this.mEl.value);
+        const useBessel = this.besselEl.checked;
+        const bins = Math.max(5, Number(this.binEl.value) | 0);
+
+        if (!Number.isFinite(n) || !Number.isFinite(m) || n < 1 || m < 1){
+          this.showMsg("Sample size n and number of samples m must be positive integers.");
+          return;
+        }
+        if (useBessel && n === 1){
+          this.showMsg("Bessel correction (n−1) is undefined for n=1. Falling back to divide by n.");
+        }
+
+        const sampleVars = new Array(m);
+        for (let i=0;i<m;i++){
+          // draw n samples
+          let s = 0, ss = 0; // sum and sum of squares (for stable variance)
+          for (let j=0;j<n;j++){
+            const x = this.sampleOne();
+            s += x; ss += x*x;
+          }
+          const mean = s / n;
+          const sumSqDiff = ss - n * mean * mean; // ∑(x-mean)^2
+          const denom = (useBessel && n > 1) ? (n - 1) : n;
+          sampleVars[i] = sumSqDiff / denom;
+        }
+
+        const avgVar = this.mean(sampleVars);
+        const varOfVar = this.variance(sampleVars);
+
+        this.outAvgVar.textContent = avgVar.toFixed(3);
+        this.outVarOfVar.textContent = varOfVar.toFixed(3);
+
+        this.drawHistogram(sampleVars, bins, avgVar, this.parentVar);
+      }
+
+      // ---------- drawing ----------
+      drawHistogram(values, binCount, avgVar, parentVar){
+        const ctx = this.ctx;
+        const W = this.canvas.width;
+        const H = this.canvas.height;
+        ctx.clearRect(0,0,W,H);
+
+        const minV = Math.min(...values);
+        const maxV = Math.max(...values);
+        const span = (maxV - minV) || 1e-9;
+        const bw = span / binCount;
+        const bins = new Array(binCount).fill(0);
+        for (const v of values){
+          let k = Math.floor((v - minV) / bw);
+          if (k >= binCount) k = binCount - 1;
+          bins[k] += 1;
+        }
+        const maxFreq = Math.max(...bins);
+
+        // axes
+        ctx.strokeStyle = "#d1d5db";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(40, 10);
+        ctx.lineTo(40, H-30);
+        ctx.lineTo(W-10, H-30);
+        ctx.stroke();
+
+        // bars
+        const plotW = W - 50;
+        const plotH = H - 50;
+        const baseX = 40;
+        const baseY = H - 30;
+        const pxPerBin = plotW / binCount;
+
+        ctx.fillStyle = "#9ec5fe";
+        for (let i=0;i<binCount;i++){
+          const h = (bins[i] / maxFreq) * plotH;
+          const x = baseX + i * pxPerBin + 2;
+          const y = baseY - h;
+          const w = pxPerBin - 4;
+          ctx.fillRect(x, y, w, h);
+        }
+
+        // helper to draw vertical guides
+        const xForVal = v => baseX + ((v - minV) / span) * plotW;
+
+        // parent variance line
+        ctx.strokeStyle = "#2563eb";
+        ctx.lineWidth = 2;
+        const xParent = xForVal(parentVar);
+        ctx.beginPath();
+        ctx.moveTo(xParent, baseY);
+        ctx.lineTo(xParent, baseY - plotH);
+        ctx.stroke();
+
+        // average sample variance line
+        ctx.strokeStyle = "#10b981";
+        ctx.setLineDash([6,4]);
+        const xAvg = xForVal(avgVar);
+        ctx.beginPath();
+        ctx.moveTo(xAvg, baseY);
+        ctx.lineTo(xAvg, baseY - plotH);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // labels
+        ctx.fillStyle = "#374151";
+        ctx.font = "12px system-ui, -apple-system, Segoe UI, Roboto, Arial";
+        ctx.textAlign = "center";
+        ctx.fillText("Sample variance", (baseX + plotW/2), H - 8);
+
+        ctx.save();
+        ctx.translate(14, baseY - plotH/2);
+        ctx.rotate(-Math.PI/2);
+        ctx.textAlign = "center";
+        ctx.fillText("Frequency (relative)", 0, 0);
+        ctx.restore();
+
+        ctx.textAlign = "left";
+        ctx.fillText("σ² (parent)", xParent + 6, 18);
+        ctx.fillText("avg(sample σ²)", xAvg + 6, 32);
+      }
+    }
+
+    new VarianceExplorer();
+  </script>
+</body>
+</html>

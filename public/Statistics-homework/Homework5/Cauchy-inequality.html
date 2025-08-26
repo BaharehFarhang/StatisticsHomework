@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Unified SDE Simulator (Euler–Maruyama)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { --pad: 60px; }
+    html, body { height: 100%; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; padding: 24px; line-height: 1.4; }
+    h1 { margin: 0 0 12px; }
+    fieldset { border: 1px solid #ddd; border-radius: 8px; padding: 12px; margin: 12px 0; }
+    legend { padding: 0 6px; font-weight: 600; }
+    label { margin-right: 10px; }
+    input, select, button { margin: 4px 6px 8px 0; padding: 6px 8px; font: inherit; }
+    button { cursor: pointer; border: 1px solid #bbb; border-radius: 8px; background: #fafafa; }
+    button:hover { background: #f0f0f0; }
+    .row { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; }
+    .grow { flex: 1; }
+    canvas { border: 1px solid #e0e0e0; border-radius: 10px; display: block; margin-top: 12px; width: 100%; max-width: 1000px; height: auto; }
+    #stats { margin-top: 8px; }
+    .grid { display: grid; grid-template-columns: 1fr; gap: 22px; }
+    @media (min-width: 1100px) {
+      .grid { grid-template-columns: 1fr 1fr; }
+    }
+    .small { font-size: 12px; color: #555; }
+  </style>
+</head>
+<body>
+  <h1>Unified SDE Simulator (Euler–Maruyama)</h1>
+  <p class="small">
+    A general, extensible SDE simulator using Euler–Maruyama (and exact steps where available).
+    Choose a model, set parameters, and visualize trajectories and distributions.
+  </p>
+
+  <!-- Controls -->
+  <fieldset>
+    <legend>Global Settings</legend>
+    <div class="row">
+      <label>Total Time T <input type="number" id="T" value="1" step="0.1" min="0.05"></label>
+      <label>Steps N <input type="number" id="N" value="1000" min="10"></label>
+      <label>Trajectories M <input type="number" id="M" value="20" min="1" max="2000"></label>
+      <label>Seed (optional) <input type="text" id="seed" placeholder="e.g. 12345"></label>
+      <label>t* index <input type="number" id="tStar" value="500" min="1"></label>
+      <label>Bins <input type="number" id="bins" value="24" min="5" max="100"></label>
+      <label><input type="checkbox" id="sampleVar"> Use sample variance (n−1)</label>
+      <button id="simulate">Simulate</button>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Model</legend>
+    <div class="row">
+      <label>Choose
+        <select id="model">
+          <option value="brownian">Brownian Motion</option>
+          <option value="ou">Ornstein–Uhlenbeck</option>
+          <option value="gbm">Geometric Brownian Motion</option>
+          <option value="cir">CIR (Feller square-root)</option>
+        </select>
+      </label>
+      <div id="paramUI" class="row grow"></div>
+    </div>
+  </fieldset>
+
+  <!-- Plots -->
+  <div class="grid">
+    <div>
+      <h3>Trajectories</h3>
+      <canvas id="traj" width="1000" height="520"></canvas>
+      <div class="small">Axes: time (horizontal), state (vertical). Colors distinguish paths.</div>
+    </div>
+    <div>
+      <h3>Intermediate Distribution</h3>
+      <canvas id="histMid" width="1000" height="420"></canvas>
+      <div id="statsMid" class="small"></div>
+    </div>
+    <div>
+      <h3>Final Distribution</h3>
+      <canvas id="histEnd" width="1000" height="420"></canvas>
+      <div id="statsEnd" class="small"></div>
+    </div>
+  </div>
+
+  <script>
+  "use strict";
+
+  /*************** RNG (seedable) ***************/
+  // Mulberry32 + splitmix32 seeding for reproducibility
+  function splitmix32(seed) {
+    let h = seed >>> 0;
+    return function() {
+      h += 0x9e3779b9; h = Math.imul(h ^ (h >>> 16), 0x21f0aaad);
+      h = Math.imul(h ^ (h >>> 15), 0x735a2d97); return (h ^ (h >>> 15)) >>> 0;
+    };
+  }
+  function mulberry32(seed) {
+    let t = seed >>> 0;
+    return function() {
+      t += 0x6D2B79F5;
+      let r = Math.imul(t ^ (t >>> 15), 1 | t);
+      r ^= r + Math.imul(r ^ (r >>> 7), 61 | r);
+      return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  function makeRNGFromString(s) {
+    if (!s) return Math.random.bind(Math);
+    let sm = splitmix32(hashStringToInt(s));
+    return mulberry32(sm());
+  }
+  function hashStringToInt(str) {
+    let h = 2166136261 >>> 0;
+    for (let i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return h >>> 0;
+  }
+  function makeNormalSampler(randU) { // Box-Muller, one-at-a-time
+    let spare = null;
+    return function normal() {
+      if (spare !== null) { const z = spare; spare = null; return z; }
+      let u = 0, v = 0;
+      while (u === 0) u = randU();
+      while (v === 0) v = randU();
+      const r = Math.sqrt(-2.0 * Math.log(u));
+      const theta = 2.0 * Math.PI * v;
+      spare = r * Math.sin(theta);
+      return r * Math.cos(theta);
+    };
+  }
+
+  /*************** Model registry ***************/
+  // Each model provides drift(params)(t,x), diffusion(params)(t,x)
+  // Optional exactStep(params, x, dt, dW) overrides Euler step for improved fidelity.
+  const MODELS = {
+    brownian: {
+      label: "Brownian Motion",
+      paramsUI: () => ([
+        { id: "x0", label: "x₀", type: "number", value: 0, step: "0.1" }
+      ]),
+      drift: (p) => (t, x) => 0,
+      diffusion: (p) => (t, x) => 1
+    },
+    ou: {
+      label: "Ornstein–Uhlenbeck",
+      paramsUI: () => ([
+        { id: "theta", label: "θ (mean reversion)", type: "number", value: 2, step: "0.1" },
+        { id: "mu",    label: "μ (long-run mean)", type: "number", value: 0, step: "0.1" },
+        { id: "sigma", label: "σ (vol)", type: "number", value: 1, step: "0.1" },
+        { id: "x0",    label: "x₀", type: "number", value: 0, step: "0.1" }
+      ]),
+      drift: (p) => (t, x) => p.theta * (p.mu - x),
+      diffusion: (p) => (t, x) => p.sigma
+    },
+    gbm: {
+      label: "Geometric Brownian Motion",
+      paramsUI: () => ([
+        { id: "mu",    label: "μ (drift)", type: "number", value: 0.1, step: "0.01" },
+        { id: "sigma", label: "σ (vol)", type: "number", value: 0.2, step: "0.01" },
+        { id: "x0",    label: "x₀ (>0)", type: "number", value: 1, step: "0.1", min: "0.0001" }
+      ]),
+      drift: (p) => (t, x) => p.mu * x,
+      diffusion: (p) => (t, x) => p.sigma * x,
+      exactStep: (p, x, dt, dW) => x * Math.exp((p.mu - 0.5 * p.sigma * p.sigma) * dt + p.sigma * dW)
+    },
+    cir: {
+      label: "CIR (square-root)",
+      paramsUI: () => ([
+        { id: "kappa", label: "κ (mean reversion)", type: "number", value: 2, step: "0.1" },
+        { id: "theta", label: "θ (long-run mean)", type: "number", value: 0.5, step: "0.1" },
+        { id: "sigma", label: "σ (vol)", type: "number", value: 0.5, step: "0.1" },
+        { id: "x0",    label: "x₀ (≥0)", type: "number", value: 0.5, step: "0.1", min: "0" }
+      ]),
+      drift: (p) => (t, x) => p.kappa * (p.theta - x),
+      diffusion: (p) => (t, x) => p.sigma * Math.sqrt(Math.max(x, 0)) // clamp to avoid NaN
+    }
+  };
+
+  /*************** Simulator ***************/
+  class SDESimulator {
+    constructor({ T, N, M, modelKey, params, seed }) {
+      this.T = T; this.N = N; this.M = M; this.dt = T / N;
+      this.model = MODELS[modelKey];
+      if (!this.model) throw new Error("Unknown model: " + modelKey);
+      this.params = params || {};
+      this.U = makeRNGFromString(seed || "");       // U(0,1)
+      this.Z = makeNormalSampler(this.U);           // N(0,1)
+      this.trajectories = [];
+    }
+
+    step(x, t) {
+      const dW = Math.sqrt(this.dt) * this.Z();
+      if (this.model.exactStep) return this.model.exactStep(this.params, x, this.dt, dW);
+      const mu = this.model.drift(this.params)(t, x);
+      const sig = this.model.diffusion(this.params)(t, x);
+      return x + mu * this.dt + sig * dW;
+    }
+
+    simulateTrajectory() {
+      let x = Number(this.params.x0 ?? 0);
+      const traj = [x];
+      let t = 0;
+      for (let i = 0; i < this.N; i++) {
+        t += this.dt;
+        x = this.step(x, t);
+        // Guard for models that must remain non-negative
+        if (this.model === MODELS.cir) x = Math.max(0, x);
+        traj.push(x);
+      }
+      return traj;
+    }
+
+    simulate() {
+      this.trajectories = new Array(this.M);
+      for (let m = 0; m < this.M; m++) this.trajectories[m] = this.simulateTrajectory();
+      return this.trajectories;
+    }
+  }
+
+  /*************** Drawing utilities ***************/
+  const palette = ["#2E7D32","#1565C0","#AD1457","#EF6C00","#6A1B9A","#00838F",
+                   "#558B2F","#283593","#B71C1C","#0277BD","#7B1FA2","#37474F"];
+
+  function drawAxes(ctx, w, h, pad) {
+    ctx.strokeStyle = "#000";
+    ctx.beginPath(); ctx.moveTo(pad, h - pad); ctx.lineTo(w - pad, h - pad); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(pad, h - pad); ctx.lineTo(pad, pad); ctx.stroke();
+  }
+
+  function drawTrajectories(canvas, trajectories, T) {
+    const ctx = canvas.getContext("2d");
+    const w = canvas.width, h = canvas.height, pad = 60;
+    ctx.clearRect(0, 0, w, h);
+    drawAxes(ctx, w, h, pad);
+
+    // Determine y-range
+    let minV = +Infinity, maxV = -Infinity;
+    trajectories.forEach(tr => tr.forEach(v => { if (v < minV) minV = v; if (v > maxV) maxV = v; }));
+    if (!isFinite(minV) || !isFinite(maxV)) { minV = -1; maxV = 1; }
+    if (maxV === minV) { maxV += 1; minV -= 1; }
+    const margin = 0.1 * (maxV - minV);
+    minV -= margin; maxV += margin;
+
+    const xScale = (w - 2 * pad) / T;
+    const yScale = (h - 2 * pad) / (maxV - minV);
+
+    trajectories.forEach((traj, i) => {
+      ctx.beginPath();
+      for (let j = 0; j < traj.length; j++) {
+        const t = j * (T / (traj.length - 1));                  // FIX: correct time mapping
+        const x = pad + t * xScale;
+        const y = h - pad - (traj[j] - minV) * yScale;
+        j === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = palette[i % palette.length];
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    });
+  }
+
+  function computeHistogram(values, binCount) {
+    const n = values.length;
+    if (n === 0) return { bins: [], minVal: 0, maxVal: 0, binWidth: 1 };
+    let minVal = Math.min(...values), maxVal = Math.max(...values);
+    if (!isFinite(minVal) || !isFinite(maxVal)) { minVal = -1; maxVal = 1; }
+    const span = Math.max(maxVal - minVal, 1e-12);            // guard for zero-span
+    const binWidth = span / binCount;
+    const bins = new Array(binCount).fill(0);
+    for (const v of values) {
+      let k = Math.floor((v - minVal) / binWidth);
+      if (k >= binCount) k = binCount - 1;
+      if (k < 0) k = 0;
+      bins[k]++;
+    }
+    return { bins, minVal, maxVal, binWidth };
+  }
+
+  function drawHistogram(canvas, hist, title) {
+    const ctx = canvas.getContext("2d");
+    const w = canvas.width, h = canvas.height, pad = 60;
+    ctx.clearRect(0, 0, w, h);
+    drawAxes(ctx, w, h, pad);
+
+    const { bins, minVal, binWidth } = hist;
+    if (!bins.length) return;
+    const maxFreq = Math.max(...bins, 1);
+    const barW = (w - 2 * pad) / bins.length;
+
+    for (let i = 0; i < bins.length; i++) {
+      const bh = (bins[i] / maxFreq) * (h - 2 * pad);
+      const x = pad + i * barW;
+      const y = h - pad - bh;
+      ctx.fillStyle = "#1565C0";
+      ctx.fillRect(x + 1, y, barW - 2, bh);
+
+      // tick labels
+      ctx.fillStyle = "#000";
+      ctx.font = "11px system-ui";
+      ctx.textAlign = "center";
+      const binMid = (minVal + (i + 0.5) * binWidth).toFixed(2);
+      ctx.fillText(binMid, x + barW / 2, h - pad + 14);
+      ctx.fillText(String(bins[i]), x + barW / 2, y - 4);
+    }
+
+    ctx.font = "16px system-ui";
+    ctx.textAlign = "center";
+    ctx.fillText(title, w / 2, pad / 2);
+  }
+
+  function stats(values, sample = false) {
+    const n = values.length;
+    if (!n) return { mean: NaN, variance: NaN };
+    const mean = values.reduce((a, b) => a + b, 0) / n;
+    const denom = sample ? Math.max(n - 1, 1) : n;
+    const variance = values.reduce((s, v) => s + (v - mean) ** 2, 0) / denom;
+    return { mean, variance };
+  }
+
+  /*************** Parameter UI ***************/
+  function renderParamUI(modelKey) {
+    const host = document.getElementById("paramUI");
+    host.innerHTML = "";
+    const spec = MODELS[modelKey].paramsUI();
+    for (const p of spec) {
+      const wrap = document.createElement("label");
+      wrap.textContent = p.label + " ";
+      const input = document.createElement("input");
+      input.type = p.type || "number";
+      input.id = p.id;
+      if ("value" in p) input.value = p.value;
+      if (p.step) input.step = p.step;
+      if (p.min) input.min = p.min;
+      wrap.appendChild(input);
+      host.appendChild(wrap);
+    }
+  }
+
+  function readParams(modelKey) {
+    const spec = MODELS[modelKey].paramsUI();
+    const p = {};
+    for (const s of spec) {
+      const el = document.getElementById(s.id);
+      const val = el.type === "number" ? Number(el.value) : el.value;
+      p[s.id] = val;
+    }
+    return p;
+  }
+
+  /*************** Main ***************/
+  const els = {
+    T: document.getElementById("T"),
+    N: document.getElementById("N"),
+    M: document.getElementById("M"),
+    seed: document.getElementById("seed"),
+    tStar: document.getElementById("tStar"),
+    bins: document.getElementById("bins"),
+    sampleVar: document.getElementById("sampleVar"),
+    model: document.getElementById("model"),
+    simulate: document.getElementById("simulate"),
+    traj: document.getElementById("traj"),
+    histMid: document.getElementById("histMid"),
+    histEnd: document.getElementById("histEnd"),
+    statsMid: document.getElementById("statsMid"),
+    statsEnd: document.getElementById("statsEnd")
+  };
+
+  function run() {
+    const T = Number(els.T.value);
+    const N = Number(els.N.value);
+    const M = Number(els.M.value);
+    const modelKey = els.model.value;
+    const params = readParams(modelKey);
+    const seed = els.seed.value.trim();
+    const tStar = Math.max(1, Math.min(Number(els.tStar.value), N));
+    const binCount = Number(els.bins.value);
+    const useSample = els.sampleVar.checked;
+
+    const sim = new SDESimulator({ T, N, M, modelKey, params, seed });
+    const trajectories = sim.simulate();
+
+    drawTrajectories(els.traj, trajectories, T);
+
+    // Collect mid & end samples
+    const midVals = trajectories.map(tr => tr[tStar]);
+    const endVals = trajectories.map(tr => tr[tr.length - 1]);
+
+    // Histograms and stats
+    const midHist = computeHistogram(midVals, binCount);
+    const endHist = computeHistogram(endVals, binCount);
+    drawHistogram(els.histMid, midHist, `Intermediate (index t* = ${tStar})`);
+    drawHistogram(els.histEnd, endHist, "Final");
+
+    const sm = stats(midVals, useSample);
+    const se = stats(endVals, useSample);
+    els.statsMid.textContent = `Mean = ${sm.mean.toFixed(4)}, Variance = ${sm.variance.toFixed(4)}  ${useSample ? "(sample)" : "(population)"}`;
+    els.statsEnd.textContent = `Mean = ${se.mean.toFixed(4)}, Variance = ${se.variance.toFixed(4)}  ${useSample ? "(sample)" : "(population)"}`;
+  }
+
+  // init
+  renderParamUI(els.model.value);
+  els.model.addEventListener("change", () => renderParamUI(els.model.value));
+  els.simulate.addEventListener("click", run);
+  window.addEventListener("load", run);
+  </script>
+</body>
+</html>

@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Caesar Cipher & Frequency Analysis</title>
+  <style>
+    :root{
+      --bg: #f7f9fc;
+      --panel:#ffffff;
+      --text:#1f2937;
+      --muted:#6b7280;
+      --border:#e5e7eb;
+      --accent:#4f46e5;     /* indigo */
+      --accent-2:#06b6d4;   /* cyan */
+      --bar:#6366f1;
+    }
+    *{box-sizing:border-box}
+    body {
+      font-family: system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial,sans-serif;
+      margin: 0;
+      padding: 24px;
+      background: linear-gradient(180deg, #f9fafb, var(--bg));
+      color: var(--text);
+    }
+    h1 {
+      margin: 0 0 6px;
+      letter-spacing:.2px;
+    }
+    h2 { margin-top: 22px; }
+    p { color: var(--muted); }
+    /* Panels */
+    h1, h2, p + * { max-width: 1100px; }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      box-shadow: 0 6px 20px rgba(0,0,0,.05);
+      padding: 16px;
+      max-width: 1100px;
+      margin-top: 14px;
+    }
+    /* Inputs */
+    textarea, input[type="number"] {
+      width: 100%;
+      padding: 10px 12px;
+      font-size: 1em;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #fff;
+      color: var(--text);
+      outline: none;
+      transition: border-color .15s ease, box-shadow .15s ease;
+    }
+    textarea { height: 140px; resize: vertical; }
+    input[type="number"]{ width: 90px; }
+    textarea:focus, input[type="number"]:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(79,70,229,.15);
+    }
+    /* Buttons */
+    button {
+      padding: 8px 12px;
+      font-size: 0.98em;
+      border-radius: 12px;
+      cursor: pointer;
+      border: 1px solid transparent;
+      background: linear-gradient(180deg, var(--accent), #4338ca);
+      color: #fff;
+      box-shadow: 0 4px 14px rgba(79,70,229,.25);
+      transition: transform .05s ease, filter .15s ease;
+      margin-left: 10px;
+    }
+    button:hover { filter: brightness(1.05); }
+    button:active { transform: translateY(1px); }
+    .btn-ghost{
+      background: #fff; color: var(--text);
+      border: 1px solid var(--border);
+      box-shadow: none;
+    }
+    /* Text blocks */
+    pre {
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    .note { color:var(--muted); font-size:.92em; margin:6px 0 0; }
+    /* Tables */
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 10px 0;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      background:#fff;
+    }
+    thead th {
+      position: sticky; top: 0;
+      background: #f3f4f6;
+      color: #374151;
+      z-index: 1;
+    }
+    th, td {
+      border-bottom: 1px solid var(--border);
+      padding: 8px 10px;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+    }
+    tbody tr:nth-child(odd) { background: #fafbff; }
+    /* Histogram */
+    .histogram {
+      display: flex;
+      align-items: flex-end;
+      height: 160px;
+      margin: 10px 0;
+      border: 1px solid var(--border);
+      background: #fff;
+      border-radius: 12px;
+      padding: 10px;
+      gap: 4px;
+    }
+    .histogram .bar {
+      flex: 1;
+      background: linear-gradient(180deg, var(--bar), #4338ca);
+      border-radius: 8px 8px 2px 2px;
+      position: relative;
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      transition: opacity .15s ease;
+    }
+    .histogram .bar:hover { opacity: .9; }
+    .histogram .bar span {
+      font-size: 10px;
+      color: #374151;
+      background: #eef2ff;
+      border: 1px solid #e0e7ff;
+      padding: 1px 4px;
+      border-radius: 6px;
+      margin-bottom: 4px;
+      user-select: none;
+    }
+    /* Explanation */
+    .explanation {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      padding: 15px;
+      border-radius: 16px;
+      max-width: 1100px;
+      margin-top: 18px;
+      box-shadow: 0 6px 20px rgba(0,0,0,.05);
+    }
+    /* Small layout niceties */
+    .row { display:flex; flex-wrap:wrap; gap:10px; align-items:center }
+  </style>
+</head>
+<body>
+  <h1>Caesar Cipher &amp; Frequency Analysis</h1>
+  <p>This demo computes letter frequencies, encrypts with a Caesar shift, then attempts decryption via frequency analysis.</p>
+
+  <div class="panel">
+    <h2>Enter Text (Optional)</h2>
+    <textarea id="input-text" placeholder="Paste your text here..."></textarea>
+
+    <h2>Shift Value (Optional)</h2>
+    <div class="row">
+      <input type="number" id="shift-input" min="0" max="25" placeholder="0-25" />
+      <button id="run-btn">Run Cipher</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Original Text</h2>
+    <pre id="original-output"></pre>
+    <div class="note">Shannon entropy (bits): <span id="entropy-original">—</span></div>
+    <h2>Letter Frequency (Original Text)</h2>
+    <table id="original-table"></table>
+    <div id="original-histogram" class="histogram"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Encrypted Text</h2>
+    <pre id="encrypted-output"></pre>
+    <div class="note">Shannon entropy (bits): <span id="entropy-encrypted">—</span></div>
+    <h2>Letter Frequency (Encrypted Text)</h2>
+    <table id="encrypted-table"></table>
+    <div id="encrypted-histogram" class="histogram"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Decrypted Text (via Frequency Analysis)</h2>
+    <pre id="decrypted-output"></pre>
+  </div>
+
+  <div class="explanation">
+    <h2>Explanation</h2>
+    <p><strong>Letter Frequency:</strong> Counts how often a–z appears (case-insensitive), reporting counts and percentages.</p>
+    <p><strong>Encryption:</strong> Caesar shifts letters by a fixed amount (wrap-around).</p>
+    <p><strong>Decryption:</strong> Two guesses are shown:
+      (1) map the most frequent ciphertext letter to ‘e’,
+      (2) a light chi-squared test against standard English frequencies across all 26 shifts.</p>
+  </div>
+
+  <script>
+    "use strict";
+    const ABC = "abcdefghijklmnopqrstuvwxyz";
+    const mod = (n, m) => ((n % m) + m) % m;
+    const EN_FREQ = {
+      a:8.17,b:1.49,c:2.78,d:4.25,e:12.70,f:2.23,g:2.02,h:6.09,i:7.00,j:0.15,k:0.77,l:4.03,
+      m:2.41,n:6.75,o:7.51,p:1.93,q:0.10,r:5.99,s:6.33,t:9.06,u:2.76,v:0.98,w:2.36,x:0.15,y:1.97,z:0.07
+    };
+
+    const defaultText = `Within the realm of digital secrets, every word hides a message waiting to be discovered.
+Through subtle shifts in the alphabet, meaning transforms and reemerges in new forms.
+This demonstration reveals the delicate balance between encryption and analysis,
+showing that even simple techniques can unlock profound insights into language.`;
+
+    class CaesarCipher {
+      constructor(shift = 1) { this.shift = mod(shift, 26); }
+      encrypt(text) { return text.split("").map(ch => shiftChar(ch, this.shift)).join(""); }
+      decryptHeuristic(text) {
+        const freqs = computeFrequencies(text);
+        const most = Object.entries(freqs).reduce((a,b)=> b[1].count > a[1].count ? b : a)[0];
+        const assumedShift = mod(most.charCodeAt(0) - 'e'.charCodeAt(0), 26);
+        const decipher = new CaesarCipher(mod(26 - assumedShift, 26));
+        return { assumedShift, text: decipher.encrypt(text) };
+      }
+    }
+
+    function shiftChar(char, shift) {
+      const isUpper = char >= 'A' && char <= 'Z';
+      const lower = char.toLowerCase();
+      if (ABC.includes(lower)) {
+        const idx = ABC.indexOf(lower);
+        const newChar = ABC[mod(idx + shift, 26)];
+        return isUpper ? newChar.toUpperCase() : newChar;
+      }
+      return char;
+    }
+
+    function computeFrequencies(text) {
+      const counts = {}; for (const l of ABC) counts[l] = 0;
+      for (const ch of text.toLowerCase()) if (counts.hasOwnProperty(ch)) counts[ch]++;
+      const total = Object.values(counts).reduce((s,x)=>s+x,0);
+      const out = {};
+      for (const l of ABC) {
+        out[l] = { count: counts[l], percentage: total ? ((counts[l]/total)*100).toFixed(2) : "0.00" };
+      }
+      return out;
+    }
+
+    function shannonEntropy(text) {
+      const counts = {}; for (const l of ABC) counts[l] = 0;
+      for (const ch of text.toLowerCase()) if (counts.hasOwnProperty(ch)) counts[ch]++;
+      const total = Object.values(counts).reduce((s,x)=>s+x,0) || 1;
+      let H = 0;
+      for (const v of Object.values(counts)) if (v > 0) { const p = v / total; H += -p * Math.log2(p); }
+      return H.toFixed(3);
+    }
+
+    function rotate(arr, k){ k = mod(k, arr.length); return arr.slice(k).concat(arr.slice(0,k)); }
+    function chiBestShiftFromText(text) {
+      const counts = new Array(26).fill(0);
+      for (const ch of text.toLowerCase()) {
+        const i = ABC.indexOf(ch);
+        if (i !== -1) counts[i]++;
+      }
+      const total = counts.reduce((a,b)=>a+b,0) || 1;
+      const expected = ABC.split("").map(l => total * (EN_FREQ[l] / 100));
+
+      let best = {shift:0, chi:Infinity};
+      for (let s = 0; s < 26; s++) {
+        const rotated = rotate(counts, s);
+        let chi = 0;
+        for (let i = 0; i < 26; i++) {
+          const O = rotated[i], E = expected[i] || 1e-9;
+          chi += (O - E) * (O - E) / E;
+        }
+        if (chi < best.chi) best = {shift:s, chi};
+      }
+      return best;
+    }
+
+    function renderTable(frequencies, elementId) {
+      const table = document.getElementById(elementId);
+      let html = "<thead><tr><th>Letter</th><th>Count</th><th>Percentage</th></tr></thead><tbody>";
+      const sorted = Object.entries(frequencies).sort((a, b) => b[1].count - a[1].count);
+      for (const [letter, data] of sorted) {
+        if (data.count > 0) {
+          html += `<tr>
+            <td>${letter.toUpperCase()}</td>
+            <td>${data.count}</td>
+            <td>${data.percentage}%</td>
+          </tr>`;
+        }
+      }
+      html += "</tbody>";
+      table.innerHTML = html;
+    }
+
+    function renderHistogram(frequencies, containerId) {
+      const container = document.getElementById(containerId);
+      container.innerHTML = "";
+      const maxCount = Math.max(...Object.values(frequencies).map(f => f.count)) || 1;
+      for (const letter of ABC) {
+        const data = frequencies[letter] || { count: 0 };
+        const barHeight = (data.count / maxCount) * 100;
+        const bar = document.createElement("div");
+        bar.className = "bar";
+        bar.style.height = `${barHeight}%`;
+        bar.title = `${letter.toUpperCase()}: ${data.count}`;
+        const label = document.createElement("span");
+        label.textContent = letter;
+        bar.appendChild(label);
+        container.appendChild(bar);
+      }
+    }
+
+    function processText() {
+      const userText = document.getElementById("input-text").value.trim();
+      const text = userText || defaultText;
+      document.getElementById("original-output").textContent = text;
+
+      const originalFrequencies = computeFrequencies(text);
+      renderTable(originalFrequencies, "original-table");
+      renderHistogram(originalFrequencies, "original-histogram");
+      document.getElementById("entropy-original").textContent = shannonEntropy(text);
+
+      let shift = parseInt(document.getElementById("shift-input").value, 10);
+      if (isNaN(shift) || shift < 0 || shift > 25) shift = Math.floor(Math.random() * 25) + 1;
+      shift = mod(shift, 26);
+
+      const cipher = new CaesarCipher(shift);
+      const encryptedText = cipher.encrypt(text);
+      document.getElementById("encrypted-output").textContent = `Shift used: ${shift}\n` + encryptedText;
+
+      const encryptedFrequencies = computeFrequencies(encryptedText);
+      renderTable(encryptedFrequencies, "encrypted-table");
+      renderHistogram(encryptedFrequencies, "encrypted-histogram");
+      document.getElementById("entropy-encrypted").textContent = shannonEntropy(encryptedText);
+
+      const heuristic = cipher.decryptHeuristic(encryptedText);
+      const best = chiBestShiftFromText(encryptedText);
+      const decipher = new CaesarCipher(mod(26 - best.shift, 26));
+      const chisqText = decipher.encrypt(encryptedText);
+
+      document.getElementById("decrypted-output").textContent =
+        `Heuristic (map max→'e') shift: ${heuristic.assumedShift}\n` +
+        `Chi-square best shift:       ${best.shift}\n\n` +
+        chisqText;
+    }
+
+    document.getElementById("run-btn").addEventListener("click", processText);
+    processText();
+  </script>
+</body>
+</html>

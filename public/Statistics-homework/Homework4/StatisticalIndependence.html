@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Wiener Process Simulator (Scaling Limit of Random Walk)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root {
+      --pad: 56px;
+      --grid: #ddd;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      line-height: 1.45;
+      margin: 0;
+      color: #111;
+      background: #fafafa;
+    }
+    header, main { max-width: 1100px; margin: 0 auto; padding: 20px; }
+    h1 { margin: 12px 0 6px; font-weight: 700; }
+    p.lead { margin-top: 0; color: #444; }
+    .panel {
+      background: #fff; border: 1px solid #e5e5e5; border-radius: 10px;
+      padding: 16px; box-shadow: 0 1px 2px rgba(0,0,0,.03);
+    }
+    .controls {
+      display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      align-items: end;
+    }
+    label { font-size: 12px; color: #555; display: block; margin-bottom: 4px; }
+    input[type="number"] {
+      width: 100%; padding: 8px 10px; border: 1px solid #d3d3d3; border-radius: 8px;
+      background: #fff; font: inherit;
+    }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; }
+    button {
+      padding: 10px 14px; border: 0; border-radius: 10px; font-weight: 600;
+      background: #111; color: #fff; cursor: pointer;
+    }
+    button.secondary { background: #444; }
+    canvas {
+      display: block; width: 100%; height: 520px; background: #fff;
+      border: 1px solid #e5e5e5; border-radius: 10px;
+      margin: 16px auto;
+    }
+    .stats { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .note { color: #444; font-size: 14px; }
+    .foot { color: #666; font-size: 13px; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>Wiener Process Simulator</h1>
+  <p class="lead">
+    Approximates the scaling limit of a random walk. Time is split into steps of size
+    <em>dt = T / n</em>. At each step the process jumps by <em>±&sigma;&radic;dt</em>.
+    For a standard Wiener process, set <strong>&mu; = 0</strong> and <strong>&sigma; = 1</strong>.
+  </p>
+</header>
+
+<main class="panel">
+  <div class="controls">
+    <div>
+      <label for="T">Time horizon T</label>
+      <input id="T" type="number" value="10" step="0.1" min="0.1" />
+    </div>
+    <div>
+      <label for="n">Subdivisions n</label>
+      <input id="n" type="number" value="2000" min="50" step="50" />
+    </div>
+    <div>
+      <label for="m">Trajectories m</label>
+      <input id="m" type="number" value="30" min="1" />
+    </div>
+    <div>
+      <label for="mu">Drift &mu; (per unit time)</label>
+      <input id="mu" type="number" value="0" step="0.1" />
+    </div>
+    <div>
+      <label for="sigma">Diffusion &sigma;</label>
+      <input id="sigma" type="number" value="1" step="0.1" min="0" />
+    </div>
+    <div>
+      <label for="k">Vertical range multiplier k (± k&radic;T)</label>
+      <input id="k" type="number" value="3" step="0.5" min="1" />
+    </div>
+    <div class="row">
+      <button id="simulate">Simulate</button>
+      <button class="secondary" id="reset">Reset View</button>
+    </div>
+  </div>
+
+  <canvas id="cnv" width="1100" height="520"></canvas>
+
+  <div class="row stats" id="stats"></div>
+
+  <p class="note">
+    <strong>Significance.</strong>
+    With step size <em>dt</em> and jumps <em>±&sigma;&radic;dt</em>, the walk has
+    mean increment <em>&mu;dt</em> and variance <em>&sigma;<sup>2</sup>dt</em>.
+    As <em>n &rarr; &infin;</em> (so <em>dt &rarr; 0</em>), the linearly interpolated path
+    converges in distribution to <em>X<sub>t</sub> = &mu;t + &sigma;W<sub>t</sub></em>, where
+    <em>W<sub>t</sub></em> is a Wiener process (Donsker’s invariance principle /
+    functional CLT).
+  </p>
+  <p class="foot">
+    Tip: increase <em>n</em> for a finer approximation; increase <em>m</em> to
+    see a cloud of paths. For standard Brownian motion, use &mu;=0, &sigma;=1.
+  </p>
+</main>
+
+<script>
+"use strict";
+
+/**
+ * Brownian (Wiener) path simulator via ±σ√dt jumps.
+ * If μ ≠ 0, the step bias is scaled as p(dt) = 1/2 + (1/2) μ √dt
+ * so that E[ΔX] = μ dt and Var[ΔX] = σ² dt.
+ */
+class WienerSimulator {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext("2d");
+    // Device-pixel crisp lines
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    this.canvas.width = Math.floor(this.canvas.clientWidth * dpr);
+    this.canvas.height = Math.floor(this.canvas.clientHeight * dpr);
+    this.ctx.scale(dpr, dpr);
+  }
+
+  simulatePaths({ T, n, m, mu, sigma }) {
+    const dt = T / n;
+    const jump = sigma * Math.sqrt(dt);
+    const paths = new Array(m);
+    for (let j = 0; j < m; j++) {
+      const times = new Array(n + 1);
+      const values = new Array(n + 1);
+      times[0] = 0; values[0] = 0;
+      let x = 0;
+      for (let i = 1; i <= n; i++) {
+        const p = Math.max(0, Math.min(1, 0.5 + 0.5 * mu * Math.sqrt(dt)));
+        x += (Math.random() < p ? +jump : -jump);
+        times[i] = i * dt;
+        values[i] = x;
+      }
+      paths[j] = { times, values };
+    }
+    return { dt, jump, paths };
+  }
+
+  clear() { this.ctx.clearRect(0, 0, this.canvas.clientWidth, this.canvas.clientHeight); }
+
+  drawAxes({ T, ymin, ymax }) {
+    const ctx = this.ctx;
+    const W = this.canvas.clientWidth, H = this.canvas.clientHeight, pad = 56;
+
+    // Grid
+    ctx.strokeStyle = "#eee"; ctx.lineWidth = 1;
+    for (let g = 0; g <= 10; g++) {
+      const y = H - pad - g * (H - 2 * pad) / 10;
+      ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(W - pad, y); ctx.stroke();
+    }
+
+    // Axes
+    ctx.strokeStyle = "#111"; ctx.lineWidth = 1.25;
+    ctx.beginPath(); ctx.moveTo(pad, H - pad); ctx.lineTo(W - pad, H - pad); ctx.stroke(); // x
+    ctx.beginPath(); ctx.moveTo(pad, H - pad); ctx.lineTo(pad, pad); ctx.stroke();         // y
+
+    // Labels
+    ctx.font = "14px system-ui, -apple-system, Segoe UI, Roboto, Arial";
+    ctx.textAlign = "center"; ctx.fillStyle = "#111";
+    ctx.fillText("time t", W / 2, H - 16);
+
+    ctx.save(); ctx.translate(16, H / 2); ctx.rotate(-Math.PI / 2);
+    ctx.fillText("value", 0, 0); ctx.restore();
+
+    // Ticks
+    ctx.textAlign = "center"; ctx.fillStyle = "#444";
+    for (let i = 0; i <= 10; i++) {
+      const x = pad + i * (W - 2 * pad) / 10;
+      const tVal = (T * i / 10).toFixed(2);
+      ctx.beginPath(); ctx.moveTo(x, H - pad); ctx.lineTo(x, H - pad + 5); ctx.stroke();
+      ctx.fillText(tVal, x, H - pad + 18);
+    }
+    ctx.textAlign = "right";
+    for (let i = 0; i <= 10; i++) {
+      const y = H - pad - i * (H - 2 * pad) / 10;
+      const yVal = (ymin + (ymax - ymin) * i / 10).toFixed(2);
+      ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(pad - 5, y); ctx.stroke();
+      ctx.fillText(yVal, pad - 10, y + 4);
+    }
+  }
+
+  drawPaths({ T, ymin, ymax }, paths) {
+    const ctx = this.ctx;
+    const W = this.canvas.clientWidth, H = this.canvas.clientHeight, pad = 56;
+
+    const toX = t => pad + (t / T) * (W - 2 * pad);
+    const toY = v => H - pad - ((v - ymin) / (ymax - ymin)) * (H - 2 * pad);
+
+    const colors = ["#111","#DB4437","#4285F4","#0F9D58","#F4B400","#AB47BC",
+                    "#8D6E63","#5C6BC0","#FF7043","#0097A7","#7CB342","#6D4C41"];
+
+    paths.forEach((p, idx) => {
+      ctx.beginPath();
+      for (let i = 0; i < p.times.length; i++) {
+        const x = toX(p.times[i]);
+        const y = toY(p.values[i]);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.lineWidth = 1.6;
+      ctx.strokeStyle = colors[idx % colors.length];
+      ctx.stroke();
+    });
+
+    // Mean path (optional visual): zero for μ=0 in expectation, but we plot empirical mean
+    const n = paths[0].times.length - 1;
+    const meanVals = new Array(n + 1).fill(0);
+    for (let i = 0; i <= n; i++) {
+      let s = 0;
+      for (const p of paths) s += p.values[i];
+      meanVals[i] = s / paths.length;
+    }
+    ctx.beginPath();
+    for (let i = 0; i <= n; i++) {
+      const x = toX(paths[0].times[i]);
+      const y = toY(meanVals[i]);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.lineWidth = 2.2;
+    ctx.setLineDash([6, 4]);
+    ctx.strokeStyle = "#222";
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+}
+
+(function init() {
+  const cnv = document.getElementById("cnv");
+  const simBtn = document.getElementById("simulate");
+  const resetBtn = document.getElementById("reset");
+  const statsEl = document.getElementById("stats");
+
+  const inputs = {
+    T: document.getElementById("T"),
+    n: document.getElementById("n"),
+    m: document.getElementById("m"),
+    mu: document.getElementById("mu"),
+    sigma: document.getElementById("sigma"),
+    k: document.getElementById("k"),
+  };
+
+  const sim = new WienerSimulator(cnv);
+
+  function readParams() {
+    const T = Math.max(0.1, Number(inputs.T.value) || 10);
+    const n = Math.max(10, Math.floor(Number(inputs.n.value) || 1000));
+    const m = Math.max(1, Math.floor(Number(inputs.m.value) || 20));
+    const mu = Number(inputs.mu.value) || 0;
+    const sigma = Math.max(0, Number(inputs.sigma.value) || 1);
+    const k = Math.max(1, Number(inputs.k.value) || 3);
+    return { T, n, m, mu, sigma, k };
+  }
+
+  function computeStats(paths, T) {
+    const m = paths.length;
+    const lastVals = paths.map(p => p.values[p.values.length - 1]);
+    const mean = lastVals.reduce((a, b) => a + b, 0) / m;
+    const variance = lastVals.reduce((a, b) => a + (b - mean) ** 2, 0) / (m - 1 || 1);
+    // Theoretical: E[X_T]=μT, Var[X_T]=σ²T
+    return { mean, variance };
+  }
+
+  function render() {
+    const { T, n, m, mu, sigma, k } = readParams();
+
+    const { paths } = sim.simulatePaths({ T, n, m, mu, sigma });
+
+    sim.clear();
+    const ymin = -k * Math.sqrt(T) * Math.max(1, sigma); // expand by sigma
+    const ymax =  k * Math.sqrt(T) * Math.max(1, sigma);
+    sim.drawAxes({ T, ymin, ymax });
+    sim.drawPaths({ T, ymin, ymax }, paths);
+
+    const { mean, variance } = computeStats(paths, T);
+    statsEl.innerHTML =
+      `<div>Empirical at t=T → <strong>mean:</strong> ${mean.toFixed(3)}, ` +
+      `<strong>variance:</strong> ${variance.toFixed(3)}</div>` +
+      `<div>Theoretical → <strong>E[X<sub>T</sub>]</strong>= μT = ${(mu*T).toFixed(3)}, ` +
+      `<strong>Var[X<sub>T</sub>]</strong>= σ²T = ${((sigma*sigma)*T).toFixed(3)}</div>`;
+  }
+
+  simBtn.addEventListener("click", render);
+  resetBtn.addEventListener("click", () => {
+    inputs.T.value = 10; inputs.n.value = 2000; inputs.m.value = 30;
+    inputs.mu.value = 0; inputs.sigma.value = 1; inputs.k.value = 3;
+    render();
+  });
+
+  // Initial render
+  render();
+
+  // Resize handling to keep canvas crisp
+  window.addEventListener("resize", () => {
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    sim.canvas.width = Math.floor(sim.canvas.clientWidth * dpr);
+    sim.canvas.height = Math.floor(sim.canvas.clientHeight * dpr);
+    sim.ctx.setTransform(1,0,0,1,0,0);
+    sim.ctx.scale(dpr, dpr);
+    render();
+  });
+})();
+</script>
+</body>
+</html>
