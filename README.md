@@ -144,7 +144,6 @@ This project is licensed under the MIT License.
 
 ## Acknowledgments
 
-- Inspired by the [StatisticsHWs Google Sites page](https://sites.google.com/view/statisticshws/home)
 - Built with Vue 3 and modern web technologies
 - Designed for educational content organization
 
