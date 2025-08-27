@@ -1,6 +1,6 @@
 # Statistics Homework Viewer
 
-A modern, responsive Vue 3 application for organizing and viewing statistics homework assignments, similar to the [StatisticsHWs Google Sites page](https://sites.google.com/view/statisticshws/home).
+A modern, responsive Vue 3 application for organizing and viewing statistics homework assignments.
 
 ## Features
 
