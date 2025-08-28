@@ -21,9 +21,7 @@
           <div class="homework-content">
             <h3 class="homework-title">{{ homework.title }}</h3>
             <p class="homework-description">{{ homework.description }}</p>
-            <div class="homework-files">
-              <span class="file-count">{{ homework.fileCount }} files</span>
-            </div>
+            
           </div>
           <div class="homework-arrow">
             <svg viewBox="0 0 24 24" fill="currentColor" class="arrow-icon">
