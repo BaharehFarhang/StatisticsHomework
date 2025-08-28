@@ -7,7 +7,7 @@ A modern, responsive Vue 3 application for organizing and viewing statistics hom
 - 🎨 **Modern UI Design**: Clean, responsive interface with beautiful gradients and animations
 - 📱 **Mobile Responsive**: Optimized for all device sizes
 - 📚 **Homework Organization**: Structured display of 10 homework assignments
-- 📁 **File Management**: View and organize different file types (documents, images, HTML)
+- 📁 **File Management**: View and organize different files (documents, HTML)
 - 🚀 **Fast Navigation**: Vue Router for seamless page transitions
 - 🎯 **Interactive Elements**: Hover effects and smooth animations
 
@@ -111,7 +111,6 @@ The application uses CSS custom properties and modern CSS features. Modify the s
 ## File Types Supported
 
 - **Documents**: .docx, .pdf files
-- **Images**: .PNG files
 - **HTML**: .html files
 - **Generic**: Other file types
 
